@@ -16,14 +16,10 @@
  */
 package org.fusesource.hawtjournal.api;
 
-import org.fusesource.hawtjournal.api.Journal;
 import java.io.File;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.nio.ByteBuffer;
 
 import junit.framework.TestCase;
-
-import org.fusesource.hawtbuf.Buffer;
 
 /**
  * 
@@ -99,7 +95,7 @@ public class JournalTest extends TestCase {
 //    }
 //
     public void testBatchWriteCompleteAfterClose() throws Exception {
-        Buffer data = new Buffer("DATA".getBytes());
+        ByteBuffer data = ByteBuffer.wrap("DATA".getBytes());
         final int iterations = 10;
         for (int i=0; i<iterations; i++) {
             dataManager.write(data, false);
@@ -129,7 +125,7 @@ public class JournalTest extends TestCase {
 //    }
     
     public void testNoBatchWriteWithSync() throws Exception {
-        Buffer data = new Buffer("DATA".getBytes());
+        ByteBuffer data = ByteBuffer.wrap("DATA".getBytes());
         final int iterations = 10;
         for (int i=0; i<iterations; i++) {
             dataManager.write(data, true);
