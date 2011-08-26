@@ -25,20 +25,20 @@
 
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>org.fusesource.hawtdb</groupId>
-  <artifactId>hawtdb</artifactId>
+  <groupId>org.fusesource.hawtjournal</groupId>
+  <artifactId>hawtjournal</artifactId>
   <packaging>bundle</packaging>
-  <version>1.6-SNAPSHOT</version>
+  <version>1.0-SNAPSHOT</version>
 
-  <name>HawtDB</name>
+  <name>HawtJournal</name>
   <description>
-    HawtDB is an embedded MVCC Key/Value Database.
+    HawtJournal is a variable length record, checksumming, append only rotating log implementation with graceful recovery.
   </description>
 
   <properties>
-    <forge-project-id>hawtdb</forge-project-id>
-    <forge-project-id-uc>HAWTDB</forge-project-id-uc>
-    <release-altGitURL>scm:git:git@github.com:fusesource/hawtdb.git</release-altGitURL>
+    <forge-project-id>hawtjournal</forge-project-id>
+    <forge-project-id-uc>HawtJournal</forge-project-id-uc>
+    <release-altGitURL>scm:git:git@github.com:fusesource/hawtjournal.git</release-altGitURL>
 
     <hawtbuf-version>1.4</hawtbuf-version>
     <commons-logging-version>1.1</commons-logging-version>
@@ -51,26 +51,9 @@
 
   <issueManagement>
     <system>assembla</system>
-    <url>http://www.assembla.com/spaces/hawtdb/support/tickets</url>
+    <url>http://www.assembla.com/spaces/hawtjournal/support/tickets</url>
   </issueManagement>
-  
-  <mailingLists>
-    <mailingList>
-      <name>Discussion Group</name>
-      <archive>http://groups.google.com/group/hawtdb</archive>
-      <post>hawtdb@googlegroups.com</post>
-      <subscribe>hawtdb+subscribe@googlegroups.com</subscribe>
-      <unsubscribe>hawtdb+unsubscribe@googlegroups.com</unsubscribe>
-    </mailingList>
-    <mailingList>
-      <name>Source Control and Issue Tracker Notifications</name>
-      <archive>http://groups.google.com/group/hawtdb-commits</archive>
-      <post>hawtdb-commits@googlegroups.com</post>
-      <subscribe>hawtdb-commits+subscribe@googlegroups.com</subscribe>
-      <unsubscribe>hawtdb-commits+unsubscribe@googlegroups.com</unsubscribe>
-    </mailingList>
-  </mailingLists>
-  
+    
   <licenses>
     <license>
       <name>The Apache Software License, Version 2.0</name>
@@ -83,7 +66,7 @@
     <connection>scm:git:git://forge.fusesource.com/${forge-project-id}.git</connection>
     <!-- Work around for issue: http://jira.codehaus.org/browse/SCM-444 -->
     <developerConnection>${release-altGitURL}</developerConnection>
-    <url>http://github.com/chirino/hawtdb/tree/master</url>
+    <url>http://github.com/chirino/hawtjournal/tree/master</url>
   </scm>
 
   <distributionManagement>
@@ -101,6 +84,13 @@
       <email>hiram@hiramchirino.com</email>
       <url>http://hiramchirino.com</url>
       <timezone>GMT-5</timezone>
+    </developer>
+    <developer>
+      <id>sbtourist</id>
+      <name>Sergio Bossa</name>
+      <email>sergio.bossa@gmail.com</email>
+      <url>https://github.com/sbtourist</url>
+      <timezone>GMT+1</timezone>
     </developer>
   </developers>
 
