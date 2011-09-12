@@ -19,27 +19,26 @@ package org.fusesource.hawtjournal.api;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-
 import org.fusesource.hawtjournal.util.IOHelper;
-import org.fusesource.hawtjournal.util.list.LinkedNode;
 
 /**
  * DataFile
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
-public class DataFile extends LinkedNode<DataFile> implements Comparable<DataFile> {
+public class DataFile implements Comparable<DataFile> {
 
-    protected final File file;
-    protected final Integer dataFileId;
-    protected int length;
+    private final File file;
+    private final Integer dataFileId;
+    private DataFile next;
+    private int length;
 
     DataFile(File file, int number, int preferedSize) {
         this.file = file;
         this.dataFileId = Integer.valueOf(number);
-        length = (int)(file.exists() ? file.length() : 0);
+        length = (int) (file.exists() ? file.length() : 0);
     }
-    
+
     public File getFile() {
         return file;
     }
@@ -48,11 +47,19 @@ public class DataFile extends LinkedNode<DataFile> implements Comparable<DataFil
         return dataFileId;
     }
 
+    public synchronized DataFile getNext() {
+        return next;
+    }
+
+    public synchronized void setNext(DataFile next) {
+        this.next = next;
+    }
+
     public synchronized int getLength() {
         return length;
     }
 
-    public void setLength(int length) {
+    public synchronized void setLength(int length) {
         this.length = length;
     }
 
@@ -75,9 +82,9 @@ public class DataFile extends LinkedNode<DataFile> implements Comparable<DataFil
     public synchronized boolean delete() throws IOException {
         return file.delete();
     }
-    
-    public synchronized void move(File targetDirectory) throws IOException{
-        IOHelper.moveFile(file,targetDirectory);
+
+    public synchronized void move(File targetDirectory) throws IOException {
+        IOHelper.moveFile(file, targetDirectory);
     }
 
     public int compareTo(DataFile df) {
@@ -88,7 +95,7 @@ public class DataFile extends LinkedNode<DataFile> implements Comparable<DataFil
     public boolean equals(Object o) {
         boolean result = false;
         if (o instanceof DataFile) {
-            result = compareTo((DataFile)o) == 0;
+            result = compareTo((DataFile) o) == 0;
         }
         return result;
     }
@@ -97,4 +104,5 @@ public class DataFile extends LinkedNode<DataFile> implements Comparable<DataFil
     public int hashCode() {
         return dataFileId;
     }
+
 }

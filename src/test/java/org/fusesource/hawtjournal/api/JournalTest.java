@@ -16,120 +16,125 @@
  */
 package org.fusesource.hawtjournal.api;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.io.File;
 import java.nio.ByteBuffer;
-
-import junit.framework.TestCase;
+import java.util.ArrayList;
+import java.util.List;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import static org.junit.Assert.*;
 
 /**
- * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
-public class JournalTest extends TestCase {
+public class JournalTest {
+
     protected static final int DEFAULT_MAX_BATCH_SIZE = 1024 * 1024 * 4;
+    private Journal journal;
+    private File dir;
 
-    Journal dataManager;
-    File dir;
-    
-    @Override
+    @Before
     public void setUp() throws Exception {
-        dir = new File("target/tests/DataFileAppenderTest");
+        dir = new File("target/tests/JournalTest");
         dir.mkdirs();
-        dataManager = new Journal();
-        dataManager.setDirectory(dir);
-        configure(dataManager);
-        dataManager.start();
-    }
-    
-    protected void configure(Journal dataManager) {
+        journal = new Journal();
+        journal.setDirectory(dir);
+        configure(journal);
+        journal.start();
     }
 
-    @Override
+    @After
     public void tearDown() throws Exception {
-        dataManager.close();
+        journal.close();
         deleteFilesInDirectory(dir);
         dir.delete();
     }
 
-    private void deleteFilesInDirectory(File directory) {
-        File[] files = directory.listFiles();
-        for (int i=0; i<files.length; i++) {
-            File f = files[i];
-            if (f.isDirectory()) {
-                deleteFilesInDirectory(f);
-            }   
-            f.delete();
-        }  
-    }  
+    @Test
+    public void testSyncWriteAndRead() throws Exception {
+        int iterations = 10;
+        List<Location> locations = new ArrayList<Location>(iterations);
+        for (int i = 0; i < iterations; i++) {
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), true);
+        }
+        int i = 0;
+        for (Location location : locations) {
+            ByteBuffer buffer = journal.read(location);
+            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
+        }
+    }
 
-//    public void testBatchWriteCallbackCompleteAfterTimeout() throws Exception {
-//        final int iterations = 10;
-//        final CountDownLatch latch = new CountDownLatch(iterations);
-//        Buffer data = new Buffer("DATA".getBytes());
-//        for (int i=0; i < iterations; i++) {
-//            dataManager.write(data, new JournalListener() {
-//                public void success(Location location) {
-//                    latch.countDown();
-//                }
-//            });
-//        }
-//        // at this point most probably dataManager.getInflightWrites().size() >= 0
-//        // as the Thread created in DataFileAppender.enqueue() may not have caught up.
-//        assertTrue("queued data is written", latch.await(5, TimeUnit.SECONDS));
-//    }
-//
-//    public void testBatchWriteCallbackCompleteAfterClose() throws Exception {
-//        final int iterations = 10;
-//        final CountDownLatch latch = new CountDownLatch(iterations);
-//        Buffer data = new Buffer("DATA".getBytes());
-//        for (int i=0; i<iterations; i++) {
-//            dataManager.write(data, new JournalListener() {
-//                public void success(Location location) {
-//                    latch.countDown();
-//                }
-//            });
-//        }
-//        dataManager.close();
-//        assertTrue("queued data is written", dataManager.getInflightWrites().isEmpty());
-//        assertEquals("none written", 0, latch.getCount());
-//    }
-//
+    @Test
+    public void testAsyncWriteAndRead() throws Exception {
+        int iterations = 10;
+        List<Location> locations = new ArrayList<Location>(iterations);
+        for (int i = 0; i < iterations; i++) {
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
+        }
+        int i = 0;
+        for (Location location : locations) {
+            ByteBuffer buffer = journal.read(location);
+            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
+        }
+    }
+
+    @Test
+    public void testAsyncWriteAndReadWithListener() throws Exception {
+        final int iterations = 10;
+        final CountDownLatch writeLatch = new CountDownLatch(iterations);
+        JournalListener listener = new JournalListener() {
+
+            public void synced(Write[] writes) {
+                for (int i = 0; i < writes.length; i++) {
+                    writeLatch.countDown();
+                }
+            }
+
+        };
+        journal.setListener(listener);
+        for (int i = 0; i < iterations; i++) {
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
+        }
+        journal.close();
+        assertTrue(writeLatch.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test
     public void testBatchWriteCompleteAfterClose() throws Exception {
         ByteBuffer data = ByteBuffer.wrap("DATA".getBytes());
         final int iterations = 10;
-        for (int i=0; i<iterations; i++) {
-            dataManager.write(data, false);
+        for (int i = 0; i < iterations; i++) {
+            journal.write(data, false);
         }
-        dataManager.close();
-        assertTrue("queued data is written:" + dataManager.getInflightWrites().size(), dataManager.getInflightWrites().isEmpty());
+        journal.close();
+        assertTrue("queued data is written:" + journal.getInflightWrites().size(), journal.getInflightWrites().isEmpty());
     }
-    
-//    public void testBatchWriteToMaxMessageSize() throws Exception {
-//        final int iterations = 4;
-//        final CountDownLatch latch = new CountDownLatch(iterations);
-//        JournalListener done = new JournalListener() {
-//            public void success(Location location) {
-//                latch.countDown();
-//            }
-//        };
-//        int messageSize = DEFAULT_MAX_BATCH_SIZE / iterations;
-//        byte[] message = new byte[messageSize];
-//        Buffer data = new Buffer(message);
-//
-//        for (int i=0; i< iterations; i++) {
-//            dataManager.write(data, done);
-//        }
-//
-//        // write may take some time
-//        assertTrue("all callbacks complete", latch.await(10, TimeUnit.SECONDS));
-//    }
-    
+
+    @Test
     public void testNoBatchWriteWithSync() throws Exception {
         ByteBuffer data = ByteBuffer.wrap("DATA".getBytes());
         final int iterations = 10;
-        for (int i=0; i<iterations; i++) {
-            dataManager.write(data, true);
-            assertTrue("queued data is written", dataManager.getInflightWrites().isEmpty());
+        for (int i = 0; i < iterations; i++) {
+            journal.write(data, true);
+            assertTrue("queued data is written", journal.getInflightWrites().isEmpty());
         }
     }
+
+    protected void configure(Journal dataManager) {
+    }
+
+    private void deleteFilesInDirectory(File directory) {
+        File[] files = directory.listFiles();
+        for (int i = 0; i < files.length; i++) {
+            File f = files[i];
+            if (f.isDirectory()) {
+                deleteFilesInDirectory(f);
+            }
+            f.delete();
+        }
+    }
+
 }

@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.fusesource.hawtjournal.api;
+package org.fusesource.hawtjournal.util;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -27,9 +27,9 @@ import java.util.HashSet;
  *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
-public class Logging {
+public class LogHelper {
 
-    private static final Log LOG = LogFactory.getLog(Logging.class);
+    private static final Log LOG = LogFactory.getLog(LogHelper.class);
 
     public static void trace(String message, Object...args) {
         if( LOG.isTraceEnabled() ) {

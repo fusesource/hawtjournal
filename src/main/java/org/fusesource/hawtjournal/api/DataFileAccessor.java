@@ -19,14 +19,13 @@ package org.fusesource.hawtjournal.api;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.Map;
-
 import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
 import org.fusesource.hawtjournal.util.IOHelper;
 import org.fusesource.hawtbuf.Buffer;
 
 /**
  * Optimized Store reader and updater. Single threaded and synchronous. Use in
- * conjunction with the DataFileAccessorPool of concurrent use.
+ * conjunction with the DataFileAccessorPool for concurrent use.
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
@@ -70,22 +69,21 @@ final class DataFileAccessor {
             throw new IOException("Invalid location: " + location);
         }
 
-        WriteCommand asyncWrite = (WriteCommand)inflightWrites.get(location);
+        WriteCommand asyncWrite = inflightWrites.get(location);
         if (asyncWrite != null) {
             return asyncWrite.data;
         }
 
         try {
-
             if (location.getSize() == Location.NOT_SET) {
                 file.seek(location.getOffset());
                 location.setSize(file.readInt());
                 location.setType(file.readByte());
             } else {
-                file.seek(location.getOffset() + Journal.RECORD_HEAD_SPACE);
+                file.seek(Journal.HEADER_SIZE + location.getOffset());
             }
 
-            byte[] data = new byte[location.getSize() - Journal.RECORD_HEAD_SPACE];
+            byte[] data = new byte[location.getSize() - Journal.HEADER_SIZE];
             file.readFully(data);
             return new Buffer(data, 0, data.length);
 
@@ -93,14 +91,14 @@ final class DataFileAccessor {
             throw new IOException("Invalid location: " + location + ", : " + e);
         }
     }
-    
+
     public void read(long offset, byte data[]) throws IOException {
-       file.seek(offset);
-       file.readFully(data);
+        file.seek(offset);
+        file.readFully(data);
     }
 
     public void readLocationDetails(Location location) throws IOException {
-        WriteCommand asyncWrite = (WriteCommand)inflightWrites.get(location);
+        WriteCommand asyncWrite = (WriteCommand) inflightWrites.get(location);
         if (asyncWrite != null) {
             location.setSize(asyncWrite.location.getSize());
             location.setType(asyncWrite.location.getType());
@@ -111,42 +109,8 @@ final class DataFileAccessor {
         }
     }
 
-//    public boolean readLocationDetailsAndValidate(Location location) {
-//        try {
-//            WriteCommand asyncWrite = (WriteCommand)inflightWrites.get(new WriteKey(location));
-//            if (asyncWrite != null) {
-//                location.setSize(asyncWrite.location.getSize());
-//                location.setType(asyncWrite.location.getType());
-//            } else {
-//                file.seek(location.getOffset());
-//                location.setSize(file.readInt());
-//                location.setType(file.readByte());
-//
-//                byte data[] = new byte[3];
-//                file.seek(location.getOffset() + Journal.ITEM_HEAD_OFFSET_TO_SOR);
-//                file.readFully(data);
-//                if (data[0] != Journal.ITEM_HEAD_SOR[0]
-//                    || data[1] != Journal.ITEM_HEAD_SOR[1]
-//                    || data[2] != Journal.ITEM_HEAD_SOR[2]) {
-//                    return false;
-//                }
-//                file.seek(location.getOffset() + location.getSize() - Journal.ITEM_FOOT_SPACE);
-//                file.readFully(data);
-//                if (data[0] != Journal.ITEM_HEAD_EOR[0]
-//                    || data[1] != Journal.ITEM_HEAD_EOR[1]
-//                    || data[2] != Journal.ITEM_HEAD_EOR[2]) {
-//                    return false;
-//                }
-//            }
-//        } catch (IOException e) {
-//            return false;
-//        }
-//        return true;
-//    }
-
     public void updateRecord(Location location, Buffer data, boolean sync) throws IOException {
-
-        file.seek(location.getOffset() + Journal.RECORD_HEAD_SPACE);
+        file.seek(Journal.HEADER_SIZE + location.getOffset());
         int size = Math.min(data.getLength(), location.getSize());
         file.write(data.getData(), data.getOffset(), size);
         if (sync) {

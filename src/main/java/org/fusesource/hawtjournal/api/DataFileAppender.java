@@ -19,16 +19,19 @@ package org.fusesource.hawtjournal.api;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.RandomAccessFile;
+import java.util.LinkedList;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.Adler32;
 import java.util.zip.Checksum;
 
 import org.fusesource.hawtjournal.util.IOHelper;
 import org.fusesource.hawtbuf.Buffer;
 import org.fusesource.hawtbuf.DataByteArrayOutputStream;
-import org.fusesource.hawtjournal.util.list.LinkedNode;
-import org.fusesource.hawtjournal.util.list.LinkedNodeList;
 
 /**
  * An optimized writer to do batch appends to a data file. This object is thread
@@ -39,61 +42,62 @@ import org.fusesource.hawtjournal.util.list.LinkedNodeList;
  */
 class DataFileAppender {
 
-
-    protected final Journal journal;
-    protected final Map<Location, WriteCommand> inflightWrites;
-    protected final Object enqueueMutex = new Object() {
-    };
-    protected WriteBatch nextWriteBatch;
-
-    protected boolean shutdown;
-    protected IOException firstAsyncException;
-    protected final CountDownLatch shutdownDone = new CountDownLatch(1);
-
+    private final Journal journal;
+    private final Map<Location, WriteCommand> inflightWrites;
+    private final Lock writeLock = new ReentrantLock();
+    private final Condition writeBatchAvailable = writeLock.newCondition();
+    private final Condition writeBatchProcessed = writeLock.newCondition();
+    private WriteBatch nextWriteBatch;
+    private boolean shutdown;
+    private final AtomicReference<IOException> firstAsyncException = new AtomicReference<IOException>();
+    private final CountDownLatch shutdownDone = new CountDownLatch(1);
     private boolean running;
     private Thread thread;
 
     public class WriteBatch {
 
         public final DataFile dataFile;
-
-        public final LinkedNodeList<WriteCommand> writes = new LinkedNodeList<WriteCommand>();
+        public final LinkedList<WriteCommand> writes = new LinkedList<WriteCommand>();
         public final CountDownLatch latch = new CountDownLatch(1);
-		private final int offset;
+        private final int offset;
         public int size = Journal.BATCH_CONTROL_RECORD_SIZE;
 
         public WriteBatch(DataFile dataFile, int offset, WriteCommand write) throws IOException {
             this.dataFile = dataFile;
-			this.offset = offset;
+            this.offset = offset;
             this.dataFile.incrementLength(Journal.BATCH_CONTROL_RECORD_SIZE);
-            this.size=Journal.BATCH_CONTROL_RECORD_SIZE;
+            this.size = Journal.BATCH_CONTROL_RECORD_SIZE;
             journal.addToTotalLength(Journal.BATCH_CONTROL_RECORD_SIZE);
             append(write);
         }
 
-        public boolean canAppend(WriteCommand write) {
+        public final boolean canAppend(WriteCommand write) {
             int newSize = size + write.location.getSize();
-			if (newSize >= journal.maxWriteBatchSize || offset+newSize > journal.getMaxFileLength() ) {
+            if (newSize >= journal.getMaxWriteBatchSize() || offset + newSize > journal.getMaxFileLength()) {
                 return false;
             }
             return true;
         }
 
-        public void append(WriteCommand write) throws IOException {
-            this.writes.addLast(write);
+        public final void append(WriteCommand write) throws IOException {
+            if (!writes.isEmpty())  writes.getLast().setNext(write);
+            writes.addLast(write);
             write.location.setDataFileId(dataFile.getDataFileId());
-            write.location.setOffset(offset+size);
+            write.location.setOffset(offset + size);
             int s = write.location.getSize();
-			size += s;
+            size += s;
             dataFile.incrementLength(s);
             journal.addToTotalLength(s);
         }
+
     }
 
-    public static class WriteCommand extends LinkedNode<WriteCommand> implements JournalListener.Write {
+    public static class WriteCommand implements JournalListener.Write {
+
         public final Location location;
         public final Object attachment;
-        final boolean sync;
+        public final boolean sync;
+        public WriteCommand next;
         public Buffer data;
 
         public WriteCommand(Location location, Buffer data, boolean sync) {
@@ -117,6 +121,15 @@ class DataFileAppender {
         public Object getAttachment() {
             return attachment;
         }
+
+        public WriteCommand getNext() {
+            return next;
+        }
+
+        public void setNext(WriteCommand next) {
+            this.next = next;
+        }
+
     }
 
     /**
@@ -130,25 +143,16 @@ class DataFileAppender {
     /**
      */
     public Location storeItem(Buffer data, byte type, boolean sync) throws IOException {
-
-        // Write the packet our internal buffer.
-        int size = data.getLength() + Journal.RECORD_HEAD_SPACE;
+        // Write the packet into our internal buffer.
+        int size = Journal.HEADER_SIZE + data.getLength();
 
         final Location location = new Location();
         location.setSize(size);
         location.setType(type);
 
-        WriteBatch batch;
         WriteCommand write = new WriteCommand(location, data, sync);
+        WriteBatch batch = enqueue(write);
 
-        // Locate datafile and enqueue into the executor in sychronized block so
-        // that writes get equeued onto the executor in order that they were
-        // assigned
-        // by the data manager (which is basically just appending)
-
-        synchronized (this) {
-            batch = enqueue(write);
-        }
         location.setLatch(batch.latch);
         if (sync) {
             try {
@@ -156,99 +160,104 @@ class DataFileAppender {
             } catch (InterruptedException e) {
                 throw new InterruptedIOException();
             }
-        }	
+        }
 
         return location;
     }
 
     public Location storeItem(Buffer data, byte type, Object attachment) throws IOException {
-        // Write the packet our internal buffer.
-        int size = data.getLength() + Journal.RECORD_HEAD_SPACE;
+        // Write the packet into our internal buffer.
+        int size = Journal.HEADER_SIZE + data.getLength();
 
         final Location location = new Location();
         location.setSize(size);
         location.setType(type);
 
-        WriteBatch batch;
         WriteCommand write = new WriteCommand(location, data, attachment);
+        WriteBatch batch = enqueue(write);
 
-        synchronized (this) {
-            batch = enqueue(write);
-        }
- 
         location.setLatch(batch.latch);
         return location;
     }
 
     private WriteBatch enqueue(WriteCommand write) throws IOException {
-        synchronized (enqueueMutex) {
+        writeLock.lock();
+        try {
             if (shutdown) {
-                throw new IOException("Async Writter Thread Shutdown");
+                throw new IOException("Async Writer Thread Shutdown");
             }
-            if (firstAsyncException != null) {
-                throw firstAsyncException;
+            if (firstAsyncException.get() != null) {
+                throw firstAsyncException.get();
             }
-
             if (!running) {
                 running = true;
                 thread = new Thread() {
+
                     public void run() {
                         processQueue();
                     }
+
                 };
                 thread.setPriority(Thread.MAX_PRIORITY);
                 thread.setDaemon(true);
-                thread.setName("ActiveMQ Data File Writer");
+                thread.setName("Async Writer Thread");
                 thread.start();
             }
 
-            while ( true ) {
-	            if (nextWriteBatch == null) {
-	            	DataFile file = journal.getCurrentWriteFile();
-	            	if( file.getLength() > journal.getMaxFileLength() ) {
-	            		file = journal.rotateWriteFile();
-	            	}
-	            	
-	                nextWriteBatch = new WriteBatch(file, file.getLength(), write);
-	                enqueueMutex.notify();
-	                break;
-	            } else {
-	                // Append to current batch if possible..
-	                if (nextWriteBatch.canAppend(write)) {
-	                    nextWriteBatch.append(write);
-	                    break;
-	                } else {
-	                    // Otherwise wait for the queuedCommand to be null
-	                    try {
-	                        while (nextWriteBatch != null) {
-	                            enqueueMutex.wait();
-	                        }
-	                    } catch (InterruptedException e) {
-	                        throw new InterruptedIOException();
-	                    }
-	                    if (shutdown) {
-	                        throw new IOException("Async Writter Thread Shutdown");
-	                    }
-	                }
-	            }
+            while (true) {
+                if (nextWriteBatch == null) {
+                    DataFile file = journal.getCurrentWriteFile();
+                    if (file.getLength() > journal.getMaxFileLength()) {
+                        file = journal.rotateWriteFile();
+                    }
+                    nextWriteBatch = new WriteBatch(file, file.getLength(), write);
+                    break;
+                } else {
+                    // Append to current batch if possible..
+                    if (nextWriteBatch.canAppend(write)) {
+                        nextWriteBatch.append(write);
+                        break;
+                    } else {
+                        // Otherwise set the write batch available and wait for it to be processed
+                        writeBatchAvailable.signalAll();
+                        try {
+                            while (nextWriteBatch != null) {
+                                writeBatchProcessed.await();
+                            }
+                        } catch (InterruptedException e) {
+                            throw new InterruptedIOException();
+                        }
+                        if (shutdown) {
+                            throw new IOException("Async Writer Thread Shutdown!");
+                        }
+                    }
+                }
             }
             if (!write.sync) {
                 inflightWrites.put(write.location, write);
+            } else {
+                // force available batch:
+                writeBatchAvailable.signalAll();
             }
             return nextWriteBatch;
+        } finally {
+            writeLock.unlock();
         }
     }
 
     public void close() throws IOException {
-        synchronized (enqueueMutex) {
+        writeLock.lock();
+        try {
             if (!shutdown) {
                 shutdown = true;
                 if (running) {
-                    enqueueMutex.notifyAll();
+                    writeBatchAvailable.signalAll();
                 } else {
                     shutdownDone.countDown();
                 }
             }
+        } finally {
+            writeLock.unlock();
         }
 
         try {
@@ -271,116 +280,117 @@ class DataFileAppender {
         DataFile dataFile = null;
         RandomAccessFile file = null;
         try {
-
-            DataByteArrayOutputStream buff = new DataByteArrayOutputStream(journal.maxWriteBatchSize);
+            DataByteArrayOutputStream buff = new DataByteArrayOutputStream(journal.getMaxWriteBatchSize());
             while (true) {
-
-                Object o = null;
+                WriteBatch wb = null;
 
                 // Block till we get a command.
-                synchronized (enqueueMutex) {
+                writeLock.lock();
+                try {
                     while (true) {
-                        if (nextWriteBatch != null) {
-                            o = nextWriteBatch;
+                        if (nextWriteBatch != null || shutdown) {
+                            wb = nextWriteBatch;
                             nextWriteBatch = null;
                             break;
+                        } else {
+                            writeBatchAvailable.await();
                         }
-                        if (shutdown) {
-                            return;
+                    }
+                    writeBatchProcessed.signalAll();
+                } finally {
+                    writeLock.unlock();
+                }
+
+                if (wb != null) {
+                    if (dataFile != wb.dataFile) {
+                        if (file != null) {
+                            file.setLength(dataFile.getLength());
+                            dataFile.closeRandomAccessFile(file);
                         }
-                        enqueueMutex.wait();
+                        dataFile = wb.dataFile;
+                        file = dataFile.openRandomAccessFile();
+                        if (file.length() < journal.getPreferredFileLength()) {
+                            file.setLength(journal.getPreferredFileLength());
+                        }
                     }
-                    enqueueMutex.notify();
-                }
 
-                WriteBatch wb = (WriteBatch)o;
-                if (dataFile != wb.dataFile) {
-                    if (file != null) {
-                        file.setLength(dataFile.getLength());
-                        dataFile.closeRandomAccessFile(file);
+                    // Write an empty batch control record.
+                    buff.reset();
+                    buff.writeInt(Journal.BATCH_CONTROL_RECORD_SIZE);
+                    buff.writeByte(Journal.BATCH_CONTROL_RECORD_TYPE);
+                    buff.write(Journal.BATCH_CONTROL_RECORD_MAGIC);
+                    buff.writeInt(0);
+                    buff.writeLong(0);
+
+                    boolean forceToDisk = false;
+
+                    WriteCommand write = wb.writes.getFirst();
+                    while (write != null) {
+                        forceToDisk |= write.sync | write.attachment != null;
+                        buff.writeInt(write.location.getSize());
+                        buff.writeByte(write.location.getType());
+                        buff.write(write.data.getData(), write.data.getOffset(), write.data.getLength());
+                        write = write.getNext();
                     }
-                    dataFile = wb.dataFile;
-                    file = dataFile.openRandomAccessFile();
-                    if( file.length() < journal.preferedFileLength ) {
-                        file.setLength(journal.preferedFileLength);
+
+                    Buffer sequence = buff.toBuffer();
+
+                    // Now we can fill in the batch control record properly.
+                    buff.reset();
+                    buff.skip(5 + Journal.BATCH_CONTROL_RECORD_MAGIC.length);
+                    buff.writeInt(sequence.getLength() - Journal.BATCH_CONTROL_RECORD_SIZE);
+                    if (journal.isChecksum()) {
+                        Checksum checksum = new Adler32();
+                        checksum.update(sequence.getData(), sequence.getOffset() + Journal.BATCH_CONTROL_RECORD_SIZE, sequence.getLength() - Journal.BATCH_CONTROL_RECORD_SIZE);
+                        buff.writeLong(checksum.getValue());
                     }
-                }
 
-                // Write an empty batch control record.
-                buff.reset();
-                buff.writeInt(Journal.BATCH_CONTROL_RECORD_SIZE);
-                buff.writeByte(Journal.BATCH_CONTROL_RECORD_TYPE);
-                buff.write(Journal.BATCH_CONTROL_RECORD_MAGIC);
-                buff.writeInt(0);
-                buff.writeLong(0);
-                
-                boolean forceToDisk = false;
+                    // Now do the 1 big write.
+                    file.seek(wb.offset);
+                    file.write(sequence.getData(), sequence.getOffset(), sequence.getLength());
 
-                WriteCommand write = wb.writes.getHead();
-                while (write != null) {
-                    forceToDisk |= write.sync | write.attachment != null;
-                    buff.writeInt(write.location.getSize());
-                    buff.writeByte(write.location.getType());
-                    buff.write(write.data.getData(), write.data.getOffset(), write.data.getLength());
-                    write = write.getNext();
-                }
-
-                Buffer sequence = buff.toBuffer();
-                
-                // Now we can fill in the batch control record properly. 
-                buff.reset();
-                buff.skip(5+Journal.BATCH_CONTROL_RECORD_MAGIC.length);
-                buff.writeInt(sequence.getLength()-Journal.BATCH_CONTROL_RECORD_SIZE);
-                if( journal.isChecksum() ) {
-	                Checksum checksum = new Adler32();
-	                checksum.update(sequence.getData(), sequence.getOffset()+Journal.BATCH_CONTROL_RECORD_SIZE, sequence.getLength()-Journal.BATCH_CONTROL_RECORD_SIZE);
-	                buff.writeLong(checksum.getValue());
-                }
-
-                // Now do the 1 big write.
-                file.seek(wb.offset);
-                file.write(sequence.getData(), sequence.getOffset(), sequence.getLength());
-                
-                ReplicationTarget replicationTarget = journal.getReplicationTarget();
-                if( replicationTarget!=null ) {
-                	replicationTarget.replicate(wb.writes.getHead().location, sequence, forceToDisk);
-                }
-                
-                if (forceToDisk) {
-                    IOHelper.sync(file.getFD());
-                }
-
-                WriteCommand lastWrite = wb.writes.getTail();
-                journal.setLastAppendLocation(lastWrite.location);
-
-                // Now that the data is on disk, remove the writes from the in
-                // flight
-                // cache.
-                write = wb.writes.getHead();
-                while (write != null) {
-                    write.data = null;
-                    if (!write.sync) {
-                        WriteCommand was = inflightWrites.remove(write.location);
-                        assert( was !=null );
+                    ReplicationTarget replicationTarget = journal.getReplicationTarget();
+                    if (replicationTarget != null) {
+                        replicationTarget.replicate(wb.writes.getFirst().location, sequence, forceToDisk);
                     }
-                    write = write.getNext();
-                }
 
-                if( journal.listener!=null ) {
-                    try {
-                        journal.listener.synced(wb.writes.toArray(new WriteCommand[wb.writes.size()]));
-                    } catch (Throwable e) {
-                        e.printStackTrace();
+                    if (forceToDisk) {
+                        IOHelper.sync(file.getFD());
                     }
-                }
 
-                // Signal any waiting threads that the write is on disk.
-                wb.latch.countDown();
+                    WriteCommand lastWrite = wb.writes.getLast();
+                    journal.setLastAppendLocation(lastWrite.location);
+
+                    // Now that the data is on disk, remove the writes from the in
+                    // flight
+                    // cache.
+                    write = wb.writes.getFirst();
+                    while (write != null) {
+                        write.data = null;
+                        if (!write.sync) {
+                            WriteCommand was = inflightWrites.remove(write.location);
+                            assert (was != null);
+                        }
+                        write = write.getNext();
+                    }
+
+                    if (journal.getListener() != null) {
+                        try {
+                            journal.getListener().synced(wb.writes.toArray(new WriteCommand[wb.writes.size()]));
+                        } catch (Throwable e) {
+                            e.printStackTrace();
+                        }
+                    }
+
+                    // Signal any waiting threads that the write is on disk.
+                    wb.latch.countDown();
+                }
+                if (shutdown) {
+                    break;
+                }
             }
         } catch (IOException e) {
-            synchronized (enqueueMutex) {
-                firstAsyncException = e;
-            }
+            firstAsyncException.compareAndSet(null, e);
         } catch (InterruptedException e) {
         } finally {
             try {

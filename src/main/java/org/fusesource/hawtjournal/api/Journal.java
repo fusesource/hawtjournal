@@ -16,25 +16,33 @@
  */
 package org.fusesource.hawtjournal.api;
 
-import org.fusesource.hawtbuf.Buffer;
-import org.fusesource.hawtbuf.DataByteArrayInputStream;
-import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
-import org.fusesource.hawtjournal.util.Scheduler;
-import org.fusesource.hawtjournal.util.list.LinkedNodeList;
-
+import java.util.TreeMap;
+import java.util.Set;
+import java.util.Iterator;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.Adler32;
 import java.util.zip.Checksum;
-
-import static org.fusesource.hawtjournal.api.Logging.*;
+import org.fusesource.hawtbuf.Buffer;
+import org.fusesource.hawtbuf.DataByteArrayInputStream;
+import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
+import static org.fusesource.hawtjournal.util.LogHelper.*;
 
 /**
  * Main Journal APIs.
@@ -43,51 +51,56 @@ import static org.fusesource.hawtjournal.api.Logging.*;
  */
 public class Journal {
 
-    // ITEM_HEAD_SPACE = length + type+ reserved space + SOR
-    public static final int RECORD_HEAD_SPACE = 4 + 1;
     public static final byte USER_RECORD_TYPE = 1;
     public static final byte BATCH_CONTROL_RECORD_TYPE = 2;
-    
-    // Batch Control Item holds a 4 byte size of the batch and a 8 byte checksum of the batch. 
+    //
+    public static final int RECORD_SIZE = 4;
+    public static final int TYPE_SIZE = 1;
+    public static final int HEADER_SIZE = RECORD_SIZE + TYPE_SIZE;
+    //
+    public static final int BATCH_SIZE = 4;
+    public static final int CHECKSUM_SIZE = 8;
     public static final byte[] BATCH_CONTROL_RECORD_MAGIC = bytes("WRITE BATCH");
-    public static final int BATCH_CONTROL_RECORD_SIZE = RECORD_HEAD_SPACE + BATCH_CONTROL_RECORD_MAGIC.length + 4 + 8;
-    
+    public static final int BATCH_CONTROL_RECORD_SIZE = HEADER_SIZE + BATCH_CONTROL_RECORD_MAGIC.length + BATCH_SIZE + CHECKSUM_SIZE;
+    //
     public static final String DEFAULT_DIRECTORY = ".";
     public static final String DEFAULT_ARCHIVE_DIRECTORY = "data-archive";
     public static final String DEFAULT_FILE_PREFIX = "db-";
     public static final String DEFAULT_FILE_SUFFIX = ".log";
     public static final int DEFAULT_MAX_FILE_LENGTH = 1024 * 1024 * 32;
     public static final int DEFAULT_CLEANUP_INTERVAL = 1000 * 30;
-    public static final int PREFERED_DIFF = 1024 * 512;
-    
+    public static final int PREFERRED_DIFF = 1024 * 512;
+    //
     protected static final int DEFAULT_MAX_BATCH_SIZE = 1024 * 1024 * 4;
-    
+    //
     private static final int MAX_BATCH_SIZE = 32 * 1024 * 1024;
-        
-    protected final Map<Location, WriteCommand> inflightWrites = new ConcurrentHashMap<Location, WriteCommand>();
-    
-    protected File directory = new File(DEFAULT_DIRECTORY);
-    protected File directoryArchive = new File(DEFAULT_ARCHIVE_DIRECTORY);
-    protected String filePrefix = DEFAULT_FILE_PREFIX;
-    protected String fileSuffix = DEFAULT_FILE_SUFFIX;
-    protected boolean started;
-    protected int maxFileLength = DEFAULT_MAX_FILE_LENGTH;
-    protected int preferedFileLength = DEFAULT_MAX_FILE_LENGTH - PREFERED_DIFF;
-    protected DataFileAppender appender;
-    protected DataFileAccessorPool accessorPool;
-    protected Map<Integer, DataFile> fileMap = new HashMap<Integer, DataFile>();
-    protected Map<File, DataFile> fileByFileMap = new LinkedHashMap<File, DataFile>();
-    protected LinkedNodeList<DataFile> dataFiles = new LinkedNodeList<DataFile>();
-    protected final AtomicReference<Location> lastAppendLocation = new AtomicReference<Location>();
-    protected Runnable cleanupTask;
-    protected final AtomicLong totalLength = new AtomicLong();
-    protected boolean archiveDataLogs;
-    protected boolean checksum;
-    protected JournalListener listener;
-    
-    int maxWriteBatchSize = DEFAULT_MAX_BATCH_SIZE;
-    
+    //
+    private final Map<Location, WriteCommand> inflightWrites = new ConcurrentHashMap<Location, WriteCommand>();
+    //
+    private File directory = new File(DEFAULT_DIRECTORY);
+    private File directoryArchive = new File(DEFAULT_ARCHIVE_DIRECTORY);
+    private String filePrefix = DEFAULT_FILE_PREFIX;
+    private String fileSuffix = DEFAULT_FILE_SUFFIX;
+    private boolean started;
+    private int maxFileLength = DEFAULT_MAX_FILE_LENGTH;
+    private int preferredFileLength = DEFAULT_MAX_FILE_LENGTH - PREFERRED_DIFF;
+    private DataFileAppender appender;
+    private DataFileAccessorPool accessorPool;
+    private Map<Integer, DataFile> fileMap = new HashMap<Integer, DataFile>();
+    private Map<File, DataFile> fileByFileMap = new LinkedHashMap<File, DataFile>();
+    private LinkedList<DataFile> dataFiles = new LinkedList<DataFile>();
+    private final AtomicReference<Location> lastAppendLocation = new AtomicReference<Location>();
+    private Runnable cleanupTask;
+    private final AtomicLong totalLength = new AtomicLong();
+    private boolean archiveDataLogs;
+    private boolean checksum;
+    private JournalListener listener;
+    //
+    private int maxWriteBatchSize = DEFAULT_MAX_BATCH_SIZE;
+    //
     private ReplicationTarget replicationTarget;
+    //
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
     public synchronized void start() throws IOException {
         if (started) {
@@ -97,7 +110,7 @@ public class Journal {
         long start = System.currentTimeMillis();
         accessorPool = new DataFileAccessorPool(this);
         started = true;
-        preferedFileLength = Math.max(PREFERED_DIFF, getMaxFileLength() - PREFERED_DIFF);
+        preferredFileLength = Math.max(PREFERRED_DIFF, getMaxFileLength() - PREFERRED_DIFF);
 
         appender = new DataFileAppender(this);
 
@@ -116,7 +129,7 @@ public class Journal {
                     String n = file.getName();
                     String numStr = n.substring(filePrefix.length(), n.length() - fileSuffix.length());
                     int num = Integer.parseInt(numStr);
-                    DataFile dataFile = new DataFile(file, num, preferedFileLength);
+                    DataFile dataFile = new DataFile(file, num, preferredFileLength);
                     fileMap.put(dataFile.getDataFileId(), dataFile);
                     totalLength.addAndGet(dataFile.getLength());
                 } catch (NumberFormatException e) {
@@ -129,6 +142,7 @@ public class Journal {
             List<DataFile> l = new ArrayList<DataFile>(fileMap.values());
             Collections.sort(l);
             for (DataFile df : l) {
+                if (!dataFiles.isEmpty()) dataFiles.getLast().setNext(df);
                 dataFiles.addLast(df);
                 fileByFileMap.put(df.getFile(), df);
             }
@@ -136,7 +150,7 @@ public class Journal {
 
         getCurrentWriteFile();
         try {
-            Location l = recoveryCheck(dataFiles.getTail());
+            Location l = recoveryCheck(dataFiles.getLast());
             lastAppendLocation.set(l);
         } catch (IOException e) {
             warn(e, "recovery check failed");
@@ -149,7 +163,7 @@ public class Journal {
             }
 
         };
-        Scheduler.executePeriodically(cleanupTask, DEFAULT_CLEANUP_INTERVAL);
+        scheduler.scheduleAtFixedRate(cleanupTask, DEFAULT_CLEANUP_INTERVAL, DEFAULT_CLEANUP_INTERVAL, TimeUnit.MILLISECONDS);
         long end = System.currentTimeMillis();
         trace("Startup took: %d ms", (end - start));
     }
@@ -231,16 +245,17 @@ public class Journal {
         if (dataFiles.isEmpty()) {
             rotateWriteFile();
         }
-        return dataFiles.getTail();
+        return dataFiles.getLast();
     }
 
     synchronized DataFile rotateWriteFile() {
-        int nextNum = !dataFiles.isEmpty() ? dataFiles.getTail().getDataFileId().intValue() + 1 : 1;
+        int nextNum = !dataFiles.isEmpty() ? dataFiles.getLast().getDataFileId().intValue() + 1 : 1;
         File file = getFile(nextNum);
-        DataFile nextWriteFile = new DataFile(file, nextNum, preferedFileLength);
+        DataFile nextWriteFile = new DataFile(file, nextNum, preferredFileLength);
         // actually allocate the disk space
         fileMap.put(nextWriteFile.getDataFileId(), nextWriteFile);
         fileByFileMap.put(file, nextWriteFile);
+        if (!dataFiles.isEmpty()) dataFiles.getLast().setNext(nextWriteFile);
         dataFiles.addLast(nextWriteFile);
         return nextWriteFile;
     }
@@ -279,7 +294,7 @@ public class Journal {
         if (!started) {
             return;
         }
-        Scheduler.cancel(cleanupTask);
+        scheduler.shutdownNow();
         accessorPool.close();
         appender.close();
         fileMap.clear();
@@ -310,7 +325,7 @@ public class Journal {
         fileMap.clear();
         fileByFileMap.clear();
         lastAppendLocation.set(null);
-        dataFiles = new LinkedNodeList<DataFile>();
+        dataFiles = new LinkedList<DataFile>();
 
         // reopen open file handles...
         accessorPool = new DataFileAccessorPool(this);
@@ -336,7 +351,7 @@ public class Journal {
         fileByFileMap.remove(dataFile.getFile());
         fileMap.remove(dataFile.getDataFileId());
         totalLength.addAndGet(-dataFile.getLength());
-        dataFile.unlink();
+        dataFiles.remove(dataFile);
         if (archiveDataLogs) {
             dataFile.move(getDirectoryArchive());
             debug("moved data file %s to %s", dataFile, getDirectoryArchive());
@@ -369,18 +384,19 @@ public class Journal {
 
     public synchronized void appendedExternally(Location loc, int length) throws IOException {
         DataFile dataFile = null;
-        if (dataFiles.getTail().getDataFileId() == loc.getDataFileId()) {
+        if (dataFiles.getLast().getDataFileId() == loc.getDataFileId()) {
             // It's an update to the current log file..
-            dataFile = dataFiles.getTail();
+            dataFile = dataFiles.getLast();
             dataFile.incrementLength(length);
-        } else if (dataFiles.getTail().getDataFileId() + 1 == loc.getDataFileId()) {
+        } else if (dataFiles.getLast().getDataFileId() + 1 == loc.getDataFileId()) {
             // It's an update to the next log file.
             int nextNum = loc.getDataFileId();
             File file = getFile(nextNum);
-            dataFile = new DataFile(file, nextNum, preferedFileLength);
+            dataFile = new DataFile(file, nextNum, preferredFileLength);
             // actually allocate the disk space
             fileMap.put(dataFile.getDataFileId(), dataFile);
             fileByFileMap.put(file, dataFile);
+            if (!dataFiles.isEmpty()) dataFiles.getLast().setNext(dataFile);
             dataFiles.addLast(dataFile);
         } else {
             throw new IOException("Invalid external append.");
@@ -393,7 +409,7 @@ public class Journal {
         while (true) {
             if (cur == null) {
                 if (location == null) {
-                    DataFile head = dataFiles.getHead();
+                    DataFile head = dataFiles.getFirst();
                     if (head == null) {
                         return null;
                     }
@@ -456,12 +472,11 @@ public class Journal {
     }
 
     public synchronized Location getNextLocation(DataFile dataFile, Location lastLocation, boolean thisFileOnly) throws IOException, IllegalStateException {
-
         Location cur = null;
         while (true) {
             if (cur == null) {
                 if (lastLocation == null) {
-                    DataFile head = dataFile.getHeadNode();
+                    DataFile head = dataFiles.getFirst();
                     cur = new Location();
                     cur.setDataFileId(head.getDataFileId());
                     cur.setOffset(0);
@@ -586,7 +601,7 @@ public class Journal {
         if (dataFiles.isEmpty()) {
             return null;
         }
-        return dataFiles.getTail().getDataFileId();
+        return dataFiles.getLast().getDataFileId();
     }
 
     /**
@@ -606,16 +621,16 @@ public class Journal {
         long tailLength = 0;
         synchronized (this) {
             if (!dataFiles.isEmpty()) {
-                tailLength = dataFiles.getTail().getLength();
+                tailLength = dataFiles.getLast().getLength();
             }
         }
 
         long rc = totalLength.get();
 
         // The last file is actually at a minimum preferedFileLength big.
-        if (tailLength < preferedFileLength) {
+        if (tailLength < preferredFileLength) {
             rc -= tailLength;
-            rc += preferedFileLength;
+            rc += preferredFileLength;
         }
         return rc;
     }
@@ -660,4 +675,7 @@ public class Journal {
         this.listener = listener;
     }
 
+    public int getPreferredFileLength() {
+        return preferredFileLength;
+    }
 }
