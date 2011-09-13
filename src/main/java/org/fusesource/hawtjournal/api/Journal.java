@@ -22,8 +22,8 @@ import java.util.Iterator;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -58,7 +58,7 @@ public class Journal {
     //
     public static final int BATCH_SIZE = 4;
     public static final int CHECKSUM_SIZE = 8;
-    public static final byte[] BATCH_CONTROL_RECORD_MAGIC = bytes("WRITE BATCH");
+    public static final byte[] BATCH_CONTROL_RECORD_MAGIC = "WRITE BATCH".getBytes(Charset.forName("UTF-8"));
     public static final int BATCH_CONTROL_RECORD_SIZE = HEADER_SIZE + BATCH_CONTROL_RECORD_MAGIC.length + BATCH_SIZE + CHECKSUM_SIZE;
     //
     public static final String DEFAULT_DIRECTORY = ".";
@@ -171,130 +171,6 @@ public class Journal {
         trace("Startup took: %d ms", (end - start));
     }
 
-    private static byte[] bytes(String string) {
-        try {
-            return string.getBytes("UTF-8");
-        } catch (UnsupportedEncodingException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private Location recoveryCheck(DataFile dataFile) throws IOException {
-        byte controlRecord[] = new byte[BATCH_CONTROL_RECORD_SIZE];
-        DataByteArrayInputStream controlIs = new DataByteArrayInputStream(controlRecord);
-
-        Location location = new Location();
-        location.setDataFileId(dataFile.getDataFileId());
-        location.setOffset(0);
-
-        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
-        try {
-            while (true) {
-                reader.read(location.getOffset(), controlRecord);
-                controlIs.restart();
-
-                // Assert that it's  a batch record.
-                if (controlIs.readInt() != BATCH_CONTROL_RECORD_SIZE) {
-                    break;
-                }
-                if (controlIs.readByte() != BATCH_CONTROL_RECORD_TYPE) {
-                    break;
-                }
-                for (int i = 0; i < BATCH_CONTROL_RECORD_MAGIC.length; i++) {
-                    if (controlIs.readByte() != BATCH_CONTROL_RECORD_MAGIC[i]) {
-                        break;
-                    }
-                }
-
-                int size = controlIs.readInt();
-                if (size > MAX_BATCH_SIZE) {
-                    break;
-                }
-
-                if (isChecksum()) {
-
-                    long expectedChecksum = controlIs.readLong();
-
-                    byte data[] = new byte[size];
-                    reader.read(location.getOffset() + BATCH_CONTROL_RECORD_SIZE, data);
-
-                    Checksum checksum = new Adler32();
-                    checksum.update(data, 0, data.length);
-
-                    if (expectedChecksum != checksum.getValue()) {
-                        break;
-                    }
-
-                }
-
-
-                location.setOffset(location.getOffset() + BATCH_CONTROL_RECORD_SIZE + size);
-            }
-
-        } catch (IOException e) {
-        } finally {
-            accessorPool.closeDataFileAccessor(reader);
-        }
-
-        dataFile.setLength(location.getOffset());
-        return location;
-    }
-
-    void addToTotalLength(int size) {
-        totalLength.addAndGet(size);
-    }
-
-    DataFile getCurrentWriteFile() throws IOException {
-        if (dataFiles.isEmpty()) {
-            rotateWriteFile();
-        }
-        return dataFiles.get(dataFiles.size() - 1);
-    }
-
-    DataFile rotateWriteFile() {
-        int nextNum = !dataFiles.isEmpty() ? dataFiles.get(dataFiles.size() - 1).getDataFileId().intValue() + 1 : 1;
-        File file = getFile(nextNum);
-        DataFile nextWriteFile = new DataFile(file, nextNum, preferredFileLength);
-        // actually allocate the disk space
-        fileMap.put(nextWriteFile.getDataFileId(), nextWriteFile);
-        fileByFileMap.put(file, nextWriteFile);
-        if (!dataFiles.isEmpty()) {
-            dataFiles.get(dataFiles.size() - 1).setNext(nextWriteFile);
-        }
-        dataFiles.add(nextWriteFile);
-        return nextWriteFile;
-    }
-
-    public File getFile(int nextNum) {
-        String fileName = filePrefix + nextNum + fileSuffix;
-        File file = new File(directory, fileName);
-        return file;
-    }
-
-    DataFile getDataFile(Location item) throws IOException {
-        Integer key = Integer.valueOf(item.getDataFileId());
-        DataFile dataFile = fileMap.get(key);
-        if (dataFile == null) {
-            error("Looking for key %d but not found in fileMap: %s", key, fileMap);
-            throw new IOException("Could not locate data file " + getFile(item.getDataFileId()));
-        }
-        return dataFile;
-    }
-
-    File getFile(Location item) throws IOException {
-        Integer key = Integer.valueOf(item.getDataFileId());
-        DataFile dataFile = fileMap.get(key);
-        if (dataFile == null) {
-            error("Looking for key %d but not found in fileMap: %s", key, fileMap);
-            throw new IOException("Could not locate data file " + getFile(item.getDataFileId()));
-        }
-        return dataFile.getFile();
-    }
-
-    private DataFile getNextDataFile(DataFile dataFile) {
-        return dataFile.getNext();
-    }
-
     public synchronized void close() throws IOException {
         if (!opened) {
             return;
@@ -348,24 +224,6 @@ public class Journal {
             DataFile dataFile = fileMap.get(key);
             if (dataFile != null) {
                 forceRemoveDataFile(dataFile);
-            }
-        }
-    }
-
-    private void forceRemoveDataFile(DataFile dataFile) throws IOException {
-        accessorPool.disposeDataFileAccessors(dataFile);
-        fileByFileMap.remove(dataFile.getFile());
-        fileMap.remove(dataFile.getDataFileId());
-        totalLength.addAndGet(-dataFile.getLength());
-        dataFiles.remove(dataFile);
-        if (archiveDataLogs) {
-            dataFile.move(getDirectoryArchive());
-            debug("moved data file %s to %s", dataFile, getDirectoryArchive());
-        } else {
-            if (dataFile.delete()) {
-                debug("Discarded data file %s", dataFile);
-            } else {
-                warn("Failed to discard data file %s", dataFile.getFile());
             }
         }
     }
@@ -584,6 +442,130 @@ public class Journal {
 
     public int getPreferredFileLength() {
         return preferredFileLength;
+    }
+
+    void addToTotalLength(int size) {
+        totalLength.addAndGet(size);
+    }
+
+    DataFile getCurrentWriteFile() throws IOException {
+        if (dataFiles.isEmpty()) {
+            rotateWriteFile();
+        }
+        return dataFiles.get(dataFiles.size() - 1);
+    }
+
+    DataFile rotateWriteFile() {
+        int nextNum = !dataFiles.isEmpty() ? dataFiles.get(dataFiles.size() - 1).getDataFileId().intValue() + 1 : 1;
+        File file = getFile(nextNum);
+        DataFile nextWriteFile = new DataFile(file, nextNum, preferredFileLength);
+        // actually allocate the disk space
+        fileMap.put(nextWriteFile.getDataFileId(), nextWriteFile);
+        fileByFileMap.put(file, nextWriteFile);
+        if (!dataFiles.isEmpty()) {
+            dataFiles.get(dataFiles.size() - 1).setNext(nextWriteFile);
+        }
+        dataFiles.add(nextWriteFile);
+        return nextWriteFile;
+    }
+
+    private File getFile(int nextNum) {
+        String fileName = filePrefix + nextNum + fileSuffix;
+        File file = new File(directory, fileName);
+        return file;
+    }
+
+    private DataFile getDataFile(Location item) throws IOException {
+        Integer key = Integer.valueOf(item.getDataFileId());
+        DataFile dataFile = fileMap.get(key);
+        if (dataFile == null) {
+            error("Looking for key %d but not found in fileMap: %s", key, fileMap);
+            throw new IOException("Could not locate data file " + getFile(item.getDataFileId()));
+        }
+        return dataFile;
+    }
+
+    private DataFile getNextDataFile(DataFile dataFile) {
+        return dataFile.getNext();
+    }
+
+    private void forceRemoveDataFile(DataFile dataFile) throws IOException {
+        accessorPool.disposeDataFileAccessors(dataFile);
+        fileByFileMap.remove(dataFile.getFile());
+        fileMap.remove(dataFile.getDataFileId());
+        totalLength.addAndGet(-dataFile.getLength());
+        dataFiles.remove(dataFile);
+        if (archiveDataLogs) {
+            dataFile.move(getDirectoryArchive());
+            debug("moved data file %s to %s", dataFile, getDirectoryArchive());
+        } else {
+            if (dataFile.delete()) {
+                debug("Discarded data file %s", dataFile);
+            } else {
+                warn("Failed to discard data file %s", dataFile.getFile());
+            }
+        }
+    }
+
+    private Location recoveryCheck(DataFile dataFile) throws IOException {
+        byte controlRecord[] = new byte[BATCH_CONTROL_RECORD_SIZE];
+        DataByteArrayInputStream controlIs = new DataByteArrayInputStream(controlRecord);
+
+        Location location = new Location();
+        location.setDataFileId(dataFile.getDataFileId());
+        location.setOffset(0);
+
+        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
+        try {
+            while (true) {
+                reader.read(location.getOffset(), controlRecord);
+                controlIs.restart();
+
+                // Assert that it's  a batch record.
+                if (controlIs.readInt() != BATCH_CONTROL_RECORD_SIZE) {
+                    break;
+                }
+                if (controlIs.readByte() != BATCH_CONTROL_RECORD_TYPE) {
+                    break;
+                }
+                for (int i = 0; i < BATCH_CONTROL_RECORD_MAGIC.length; i++) {
+                    if (controlIs.readByte() != BATCH_CONTROL_RECORD_MAGIC[i]) {
+                        break;
+                    }
+                }
+
+                int size = controlIs.readInt();
+                if (size > MAX_BATCH_SIZE) {
+                    break;
+                }
+
+                if (isChecksum()) {
+
+                    long expectedChecksum = controlIs.readLong();
+
+                    byte data[] = new byte[size];
+                    reader.read(location.getOffset() + BATCH_CONTROL_RECORD_SIZE, data);
+
+                    Checksum checksum = new Adler32();
+                    checksum.update(data, 0, data.length);
+
+                    if (expectedChecksum != checksum.getValue()) {
+                        break;
+                    }
+
+                }
+
+
+                location.setOffset(location.getOffset() + BATCH_CONTROL_RECORD_SIZE + size);
+            }
+
+        } catch (IOException e) {
+        } finally {
+            accessorPool.closeDataFileAccessor(reader);
+        }
+
+        dataFile.setLength(location.getOffset());
+        return location;
     }
 
 }
