@@ -19,7 +19,6 @@ package org.fusesource.hawtjournal.api;
 import org.fusesource.hawtbuf.Buffer;
 
 /**
- * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public interface ReplicationTarget {

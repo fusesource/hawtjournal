@@ -22,7 +22,7 @@ import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * Used as a location in the data store.
+ * Used as a location in the journal.
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */

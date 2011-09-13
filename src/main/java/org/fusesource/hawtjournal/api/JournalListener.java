@@ -17,9 +17,6 @@
 package org.fusesource.hawtjournal.api;
 
 /**
- * <p>
- * </p>
- *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public interface JournalListener {

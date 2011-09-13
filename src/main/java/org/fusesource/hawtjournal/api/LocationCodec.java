@@ -18,17 +18,12 @@ package org.fusesource.hawtjournal.api;
 
 import org.fusesource.hawtbuf.codec.Codec;
 import org.fusesource.hawtbuf.codec.VarIntegerCodec;
-import org.fusesource.hawtjournal.api.Location;
-
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
 /**
- * Implementation of a Marshaller for Location objects.
- *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
- *
  */
 public class LocationCodec implements Codec<Location> {
 

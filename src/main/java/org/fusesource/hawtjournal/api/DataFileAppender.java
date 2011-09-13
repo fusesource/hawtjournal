@@ -19,31 +19,25 @@ package org.fusesource.hawtjournal.api;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.RandomAccessFile;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.Adler32;
 import java.util.zip.Checksum;
-
 import org.fusesource.hawtjournal.util.IOHelper;
 import org.fusesource.hawtbuf.Buffer;
 import org.fusesource.hawtbuf.DataByteArrayOutputStream;
 
 /**
- * An optimized writer to do batch appends to a data file. This object is thread
- * safe and gains throughput as you increase the number of concurrent writes it
- * does.
+ * An optimized writer to do batch appends to a data file, based on a lock-free algorithm to maximize throughput on concurrent writes.
  *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
+ * @author Sergio Bossa
  */
 class DataFileAppender {
 
@@ -130,9 +124,6 @@ class DataFileAppender {
         }
     }
 
-    /**
-     * Construct a writer
-     */
     DataFileAppender(Journal journal) {
         this.journal = journal;
         this.inflightWrites = journal.getInflightWrites();

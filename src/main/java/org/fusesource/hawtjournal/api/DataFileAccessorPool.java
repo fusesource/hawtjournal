@@ -23,9 +23,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Used to pool DataFileAccessors.
- * 
+/** 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 class DataFileAccessorPool {

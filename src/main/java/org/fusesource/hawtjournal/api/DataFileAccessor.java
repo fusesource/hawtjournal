@@ -23,11 +23,11 @@ import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
 import org.fusesource.hawtbuf.Buffer;
 
 /**
- * Optimized reader.
- * Single threaded and synchronous.
+ * Optimized reader, single threaded and synchronous.<br>
  * Use in conjunction with the DataFileAccessorPool for concurrent use.
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
+ * @author Sergio Bossa
  */
 class DataFileAccessor {
 
@@ -36,11 +36,6 @@ class DataFileAccessor {
     private final RandomAccessFile file;
     private boolean disposed;
 
-    /**
-     * Construct a reader
-     * 
-     * @throws IOException
-     */
     DataFileAccessor(Journal dataManager, DataFile dataFile) throws IOException {
         this.dataFile = dataFile;
         this.inflightWrites = dataManager.getInflightWrites();
