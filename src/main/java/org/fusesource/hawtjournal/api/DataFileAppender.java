@@ -32,6 +32,7 @@ import java.util.zip.Checksum;
 import org.fusesource.hawtjournal.util.IOHelper;
 import org.fusesource.hawtbuf.Buffer;
 import org.fusesource.hawtbuf.DataByteArrayOutputStream;
+import static org.fusesource.hawtjournal.util.LogHelper.*;
 
 /**
  * An optimized writer to do batch appends to a data file, based on a lock-free algorithm to maximize throughput on concurrent writes.
@@ -122,6 +123,7 @@ class DataFileAppender {
         public Object getAttachment() {
             return attachment;
         }
+
     }
 
     DataFileAppender(Journal journal) {
@@ -240,11 +242,11 @@ class DataFileAppender {
                     try {
                         processQueue();
                     } catch (Throwable ex) {
-                        ex.printStackTrace();
+                        warn(ex, ex.getMessage());
                         try {
                             close();
                         } catch (Exception ignored) {
-                            ignored.printStackTrace();
+                            warn(ignored, ignored.getMessage());
                         }
                     }
                 }
@@ -365,7 +367,7 @@ class DataFileAppender {
                     // Now that the data is on disk, remove the writes from the in
                     // flight
                     // cache.
-                     for (WriteCommand current : wb.writes) {
+                    for (WriteCommand current : wb.writes) {
                         if (!current.sync) {
                             WriteCommand was = inflightWrites.remove(current.location);
                             assert (was != null);
@@ -375,8 +377,8 @@ class DataFileAppender {
                     if (journal.getListener() != null) {
                         try {
                             journal.getListener().synced(wb.writes.toArray(new WriteCommand[wb.writes.size()]));
-                        } catch (Throwable e) {
-                            e.printStackTrace();
+                        } catch (Throwable ex) {
+                            warn(ex, ex.getMessage());
                         }
                     }
 
