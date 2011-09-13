@@ -79,7 +79,7 @@ public class Journal {
     private File directoryArchive = new File(DEFAULT_ARCHIVE_DIRECTORY);
     private String filePrefix = DEFAULT_FILE_PREFIX;
     private String fileSuffix = DEFAULT_FILE_SUFFIX;
-    private boolean started;
+    private boolean opened;
     private int maxFileLength = DEFAULT_MAX_FILE_LENGTH;
     private int preferredFileLength = DEFAULT_MAX_FILE_LENGTH - PREFERRED_DIFF;
     private DataFileAppender appender;
@@ -100,14 +100,14 @@ public class Journal {
     //
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
-    public synchronized void start() throws IOException {
-        if (started) {
+    public synchronized void open() throws IOException {
+        if (opened) {
             return;
         }
 
         long start = System.currentTimeMillis();
         accessorPool = new DataFileAccessorPool(this);
-        started = true;
+        opened = true;
         preferredFileLength = Math.max(PREFERRED_DIFF, getMaxFileLength() - PREFERRED_DIFF);
 
         appender = new DataFileAppender(this);
@@ -296,7 +296,7 @@ public class Journal {
     }
 
     public synchronized void close() throws IOException {
-        if (!started) {
+        if (!opened) {
             return;
         }
         scheduler.shutdownNow();
@@ -306,11 +306,11 @@ public class Journal {
         fileByFileMap.clear();
         dataFiles.clear();
         lastAppendLocation.set(null);
-        started = false;
+        opened = false;
     }
 
     public synchronized boolean clear() throws IOException {
-        if (started) {
+        if (opened) {
             throw new IllegalStateException("Cannot clear open journal!");
         }
 
@@ -336,7 +336,7 @@ public class Journal {
     }
 
     public synchronized void removeDataFiles(Set<Integer> files) throws IOException {
-        if (started) {
+        if (opened) {
             throw new IllegalStateException("Cannot remove data files from open journal!");
         }
         

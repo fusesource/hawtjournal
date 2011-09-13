@@ -47,7 +47,7 @@ public class JournalTest {
         journal = new Journal();
         journal.setDirectory(dir);
         configure(journal);
-        journal.start();
+        journal.open();
     }
 
     @After
