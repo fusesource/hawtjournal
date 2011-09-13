@@ -339,7 +339,7 @@ public class Journal {
         if (opened) {
             throw new IllegalStateException("Cannot remove data files from open journal!");
         }
-        
+
         for (Integer key : files) {
             // Can't remove the data file (or subsequent files) that is currently being written to.
             if (key >= lastAppendLocation.get().getDataFileId()) {
@@ -388,40 +388,35 @@ public class Journal {
         return directory.toString();
     }
 
-    public Location getNextLocation(Location location) throws IOException, IllegalStateException {
+    public Location firstLocation() throws IOException, IllegalStateException {
         Location cur = null;
-        while (true) {
-            if (cur == null) {
-                if (location == null) {
-                    DataFile head = dataFiles.get(0);
-                    if (head == null) {
-                        return null;
-                    }
-                    cur = new Location();
-                    cur.setDataFileId(head.getDataFileId());
-                    cur.setOffset(0);
-                } else {
-                    // Set to the next offset..
-                    if (location.getSize() == -1 && !readLocationDetails(location)) {
-                        return null;
-                    }
-                    cur = new Location(location);
-                    cur.setOffset(location.getOffset() + location.getSize());
-                }
-            } else {
-                cur.setOffset(cur.getOffset() + cur.getSize());
-            }
+        DataFile head = dataFiles.get(0);
+        if (head == null) {
+            return null;
+        } else {
+            cur = new Location();
+            cur.setDataFileId(head.getDataFileId());
+            cur.setOffset(Journal.BATCH_CONTROL_RECORD_SIZE);
+        }
+        if (!readLocationDetails(cur)) {
+            return null;
+        } else {
+            return cur;
+        }
+    }
 
-            if (!readLocationDetails(cur)) {
-                return null;
-            }
-
-            if (cur.getType() == 0) {
-                return null;
-            } else if (cur.getType() == USER_RECORD_TYPE) {
-                // Only return user records.
-                return cur;
-            }
+    public Location nextLocation(Location location) throws IOException, IllegalStateException {
+        Location cur = null;
+        if (location.getSize() == -1 && !readLocationDetails(location)) {
+            return null;
+        } else {
+            cur = new Location(location);
+            cur.setOffset(location.getOffset() + location.getSize());
+        }
+        if (!readLocationDetails(cur)) {
+            return null;
+        } else {
+            return cur;
         }
     }
 
