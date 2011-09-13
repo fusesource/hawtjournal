@@ -135,14 +135,14 @@ class DataFileAppender {
     /**
      * Construct a Store writer
      */
-    public DataFileAppender(Journal dataManager) {
+    DataFileAppender(Journal dataManager) {
         this.journal = dataManager;
         this.inflightWrites = this.journal.getInflightWrites();
     }
 
     /**
      */
-    public Location storeItem(Buffer data, byte type, boolean sync) throws IOException {
+    Location storeItem(Buffer data, byte type, boolean sync) throws IOException {
         // Write the packet into our internal buffer.
         int size = Journal.HEADER_SIZE + data.getLength();
 
@@ -165,7 +165,7 @@ class DataFileAppender {
         return location;
     }
 
-    public Location storeItem(Buffer data, byte type, Object attachment) throws IOException {
+    Location storeItem(Buffer data, byte type, Object attachment) throws IOException {
         // Write the packet into our internal buffer.
         int size = Journal.HEADER_SIZE + data.getLength();
 
@@ -245,7 +245,7 @@ class DataFileAppender {
         }
     }
 
-    public void close() throws IOException {
+    void close() throws IOException {
         writeLock.lock();
         try {
             if (!shutdown) {

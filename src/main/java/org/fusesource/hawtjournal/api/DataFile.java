@@ -22,11 +22,9 @@ import java.io.RandomAccessFile;
 import org.fusesource.hawtjournal.util.IOHelper;
 
 /**
- * DataFile
- * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
-public class DataFile implements Comparable<DataFile> {
+class DataFile implements Comparable<DataFile> {
 
     private final File file;
     private final Integer dataFileId;
@@ -39,7 +37,7 @@ public class DataFile implements Comparable<DataFile> {
         length = (int) (file.exists() ? file.length() : 0);
     }
 
-    public File getFile() {
+    File getFile() {
         return file;
     }
 

@@ -16,6 +16,7 @@
  */
 package org.fusesource.hawtjournal.api;
 
+import java.util.concurrent.ConcurrentMap;
 import java.util.TreeMap;
 import java.util.Set;
 import java.util.Iterator;
@@ -75,7 +76,7 @@ public class Journal {
     //
     private static final int MAX_BATCH_SIZE = 32 * 1024 * 1024;
     //
-    private final Map<Location, WriteCommand> inflightWrites = new ConcurrentHashMap<Location, WriteCommand>();
+    private final ConcurrentMap<Location, WriteCommand> inflightWrites = new ConcurrentHashMap<Location, WriteCommand>();
     //
     private File directory = new File(DEFAULT_DIRECTORY);
     private File directoryArchive = new File(DEFAULT_ARCHIVE_DIRECTORY);
@@ -465,62 +466,7 @@ public class Journal {
         }
         return true;
     }
-
-    public synchronized Location getNextLocation(File file, Location lastLocation, boolean thisFileOnly) throws IllegalStateException, IOException {
-        DataFile df = fileByFileMap.get(file);
-        return getNextLocation(df, lastLocation, thisFileOnly);
-    }
-
-    public synchronized Location getNextLocation(DataFile dataFile, Location lastLocation, boolean thisFileOnly) throws IOException, IllegalStateException {
-        Location cur = null;
-        while (true) {
-            if (cur == null) {
-                if (lastLocation == null) {
-                    DataFile head = dataFiles.getFirst();
-                    cur = new Location();
-                    cur.setDataFileId(head.getDataFileId());
-                    cur.setOffset(0);
-                } else {
-                    // Set to the next offset..
-                    cur = new Location(lastLocation);
-                    cur.setOffset(cur.getOffset() + cur.getSize());
-                }
-            } else {
-                cur.setOffset(cur.getOffset() + cur.getSize());
-            }
-
-            // Did it go into the next file??
-            if (dataFile.getLength() <= cur.getOffset()) {
-                if (thisFileOnly) {
-                    return null;
-                } else {
-                    dataFile = getNextDataFile(dataFile);
-                    if (dataFile == null) {
-                        return null;
-                    } else {
-                        cur.setDataFileId(dataFile.getDataFileId().intValue());
-                        cur.setOffset(0);
-                    }
-                }
-            }
-
-            // Load in location size and type.
-            DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
-            try {
-                reader.readLocationDetails(cur);
-            } finally {
-                accessorPool.closeDataFileAccessor(reader);
-            }
-
-            if (cur.getType() == 0) {
-                return null;
-            } else if (cur.getType() > 0) {
-                // Only return user records.
-                return cur;
-            }
-        }
-    }
-
+    
     public synchronized ByteBuffer read(Location location) throws IOException, IllegalStateException {
         DataFile dataFile = getDataFile(location);
         DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
@@ -569,7 +515,7 @@ public class Journal {
         this.filePrefix = filePrefix;
     }
 
-    public Map<Location, WriteCommand> getInflightWrites() {
+    public ConcurrentMap<Location, WriteCommand> getInflightWrites() {
         return inflightWrites;
     }
 

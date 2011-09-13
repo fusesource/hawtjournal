@@ -28,7 +28,7 @@ import java.util.Map;
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
-public class DataFileAccessorPool {
+class DataFileAccessorPool {
 
     private final Journal journal;
     private final Map<Integer, Pool> pools = new HashMap<Integer, Pool>();
@@ -90,8 +90,8 @@ public class DataFileAccessorPool {
 
     }
 
-    public DataFileAccessorPool(Journal dataManager) {
-        this.journal = dataManager;
+    DataFileAccessorPool(Journal journal) {
+        this.journal = journal;
     }
 
     synchronized void clearUsedMark() {
