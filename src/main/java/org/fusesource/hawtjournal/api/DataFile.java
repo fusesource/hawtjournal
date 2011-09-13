@@ -28,8 +28,8 @@ class DataFile implements Comparable<DataFile> {
 
     private final File file;
     private final Integer dataFileId;
-    private DataFile next;
-    private int length;
+    private volatile DataFile next;
+    private volatile int length;
 
     DataFile(File file, int number, int preferedSize) {
         this.file = file;
@@ -41,47 +41,47 @@ class DataFile implements Comparable<DataFile> {
         return file;
     }
 
-    public Integer getDataFileId() {
+    Integer getDataFileId() {
         return dataFileId;
     }
 
-    public synchronized DataFile getNext() {
+    synchronized DataFile getNext() {
         return next;
     }
 
-    public synchronized void setNext(DataFile next) {
+    synchronized void setNext(DataFile next) {
         this.next = next;
     }
 
-    public synchronized int getLength() {
+    synchronized int getLength() {
         return length;
     }
 
-    public synchronized void setLength(int length) {
+    synchronized void setLength(int length) {
         this.length = length;
     }
 
-    public synchronized void incrementLength(int size) {
+    synchronized void incrementLength(int size) {
         length += size;
     }
 
-    public synchronized String toString() {
+    public String toString() {
         return file.getName() + " number = " + dataFileId + " , length = " + length;
     }
 
-    public synchronized RandomAccessFile openRandomAccessFile() throws IOException {
+    synchronized RandomAccessFile openRandomAccessFile() throws IOException {
         return new RandomAccessFile(file, "rw");
     }
 
-    public synchronized void closeRandomAccessFile(RandomAccessFile file) throws IOException {
+    synchronized void closeRandomAccessFile(RandomAccessFile file) throws IOException {
         file.close();
     }
 
-    public synchronized boolean delete() throws IOException {
+    synchronized boolean delete() throws IOException {
         return file.delete();
     }
 
-    public synchronized void move(File targetDirectory) throws IOException {
+    synchronized void move(File targetDirectory) throws IOException {
         IOHelper.moveFile(file, targetDirectory);
     }
 

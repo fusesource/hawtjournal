@@ -14,13 +14,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.fusesource.hawtjournal.api;
+package org.fusesource.hawtjournal.api.support;
 
 import org.fusesource.hawtbuf.codec.Codec;
 import org.fusesource.hawtbuf.codec.VarIntegerCodec;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import org.fusesource.hawtjournal.api.Location;
 
 /**
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>

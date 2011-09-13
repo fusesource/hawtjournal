@@ -32,6 +32,7 @@ import static org.junit.Assert.*;
 
 /**
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
+ * @author Sergio Bossa
  */
 public class JournalTest {
 

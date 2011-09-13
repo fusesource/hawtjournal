@@ -17,7 +17,6 @@
 package org.fusesource.hawtjournal.api;
 
 import java.util.concurrent.ConcurrentMap;
-import java.util.TreeMap;
 import java.util.Set;
 import java.util.Iterator;
 import java.io.File;
@@ -28,7 +27,6 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -181,7 +179,7 @@ public class Journal {
         }
     }
 
-    protected Location recoveryCheck(DataFile dataFile) throws IOException {
+    private Location recoveryCheck(DataFile dataFile) throws IOException {
         byte controlRecord[] = new byte[BATCH_CONTROL_RECORD_SIZE];
         DataByteArrayInputStream controlIs = new DataByteArrayInputStream(controlRecord);
 
@@ -531,10 +529,6 @@ public class Journal {
      */
     public Set<File> getFiles() {
         return fileByFileMap.keySet();
-    }
-
-    public Map<Integer, DataFile> getFileMap() {
-        return new TreeMap<Integer, DataFile>(fileMap);
     }
 
     public long getDiskSize() {
