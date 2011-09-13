@@ -18,15 +18,14 @@ package org.fusesource.hawtjournal.api;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
-import org.fusesource.hawtjournal.util.IOHelper;
 import org.fusesource.hawtbuf.Buffer;
 
 /**
- * Optimized Store reader and updater. Single threaded and synchronous. Use in
- * conjunction with the DataFileAccessorPool for concurrent use.
+ * Optimized reader.
+ * Single threaded and synchronous.
+ * Use in conjunction with the DataFileAccessorPool for concurrent use.
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
@@ -38,7 +37,7 @@ class DataFileAccessor {
     private boolean disposed;
 
     /**
-     * Construct a Store reader
+     * Construct a reader
      * 
      * @throws IOException
      */
@@ -98,7 +97,7 @@ class DataFileAccessor {
     }
 
     synchronized void readLocationDetails(Location location) throws IOException {
-        WriteCommand asyncWrite = (WriteCommand) inflightWrites.get(location);
+        WriteCommand asyncWrite = inflightWrites.get(location);
         if (asyncWrite != null) {
             location.setSize(asyncWrite.location.getSize());
             location.setType(asyncWrite.location.getType());
@@ -108,15 +107,4 @@ class DataFileAccessor {
             location.setType(file.readByte());
         }
     }
-
-    synchronized void updateRecord(Location location, Buffer data, boolean sync) throws IOException {
-        file.seek(Journal.HEADER_SIZE + location.getOffset());
-        int size = Math.min(data.getLength(), location.getSize());
-        file.write(data.getData(), data.getOffset(), size);
-        if (sync) {
-            IOHelper.sync(file.getFD());
-        }
-
-    }
-
 }

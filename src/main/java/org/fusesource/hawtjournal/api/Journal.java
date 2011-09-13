@@ -33,6 +33,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -87,9 +88,9 @@ public class Journal {
     private int preferredFileLength = DEFAULT_MAX_FILE_LENGTH - PREFERRED_DIFF;
     private DataFileAppender appender;
     private DataFileAccessorPool accessorPool;
-    private Map<Integer, DataFile> fileMap = new HashMap<Integer, DataFile>();
-    private Map<File, DataFile> fileByFileMap = new LinkedHashMap<File, DataFile>();
-    private LinkedList<DataFile> dataFiles = new LinkedList<DataFile>();
+    private final ConcurrentMap<Integer, DataFile> fileMap = new ConcurrentHashMap<Integer, DataFile>();
+    private final ConcurrentMap<File, DataFile> fileByFileMap = new ConcurrentHashMap<File, DataFile>();
+    private final CopyOnWriteArrayList<DataFile> dataFiles = new CopyOnWriteArrayList<DataFile>();
     private final AtomicReference<Location> lastAppendLocation = new AtomicReference<Location>();
     private Runnable cleanupTask;
     private final AtomicLong totalLength = new AtomicLong();
@@ -114,6 +115,7 @@ public class Journal {
         preferredFileLength = Math.max(PREFERRED_DIFF, getMaxFileLength() - PREFERRED_DIFF);
 
         appender = new DataFileAppender(this);
+        appender.open();
 
         File[] files = directory.listFiles(new FilenameFilter() {
 
@@ -143,15 +145,17 @@ public class Journal {
             List<DataFile> l = new ArrayList<DataFile>(fileMap.values());
             Collections.sort(l);
             for (DataFile df : l) {
-                if (!dataFiles.isEmpty()) dataFiles.getLast().setNext(df);
-                dataFiles.addLast(df);
+                if (!dataFiles.isEmpty()) {
+                    dataFiles.get(dataFiles.size() - 1).setNext(df);
+                }
+                dataFiles.add(df);
                 fileByFileMap.put(df.getFile(), df);
             }
         }
 
         getCurrentWriteFile();
         try {
-            Location l = recoveryCheck(dataFiles.getLast());
+            Location l = recoveryCheck(dataFiles.get(dataFiles.size() - 1));
             lastAppendLocation.set(l);
         } catch (IOException e) {
             warn(e, "recovery check failed");
@@ -160,7 +164,9 @@ public class Journal {
         cleanupTask = new Runnable() {
 
             public void run() {
-                cleanup();
+                if (accessorPool != null) {
+                    accessorPool.disposeUnused();
+                }
             }
 
         };
@@ -242,22 +248,24 @@ public class Journal {
         totalLength.addAndGet(size);
     }
 
-    synchronized DataFile getCurrentWriteFile() throws IOException {
+    DataFile getCurrentWriteFile() throws IOException {
         if (dataFiles.isEmpty()) {
             rotateWriteFile();
         }
-        return dataFiles.getLast();
+        return dataFiles.get(dataFiles.size() - 1);
     }
 
-    synchronized DataFile rotateWriteFile() {
-        int nextNum = !dataFiles.isEmpty() ? dataFiles.getLast().getDataFileId().intValue() + 1 : 1;
+    DataFile rotateWriteFile() {
+        int nextNum = !dataFiles.isEmpty() ? dataFiles.get(dataFiles.size() - 1).getDataFileId().intValue() + 1 : 1;
         File file = getFile(nextNum);
         DataFile nextWriteFile = new DataFile(file, nextNum, preferredFileLength);
         // actually allocate the disk space
         fileMap.put(nextWriteFile.getDataFileId(), nextWriteFile);
         fileByFileMap.put(file, nextWriteFile);
-        if (!dataFiles.isEmpty()) dataFiles.getLast().setNext(nextWriteFile);
-        dataFiles.addLast(nextWriteFile);
+        if (!dataFiles.isEmpty()) {
+            dataFiles.get(dataFiles.size() - 1).setNext(nextWriteFile);
+        }
+        dataFiles.add(nextWriteFile);
         return nextWriteFile;
     }
 
@@ -267,7 +275,7 @@ public class Journal {
         return file;
     }
 
-    synchronized DataFile getDataFile(Location item) throws IOException {
+    DataFile getDataFile(Location item) throws IOException {
         Integer key = Integer.valueOf(item.getDataFileId());
         DataFile dataFile = fileMap.get(key);
         if (dataFile == null) {
@@ -277,7 +285,7 @@ public class Journal {
         return dataFile;
     }
 
-    synchronized File getFile(Location item) throws IOException {
+    File getFile(Location item) throws IOException {
         Integer key = Integer.valueOf(item.getDataFileId());
         DataFile dataFile = fileMap.get(key);
         if (dataFile == null) {
@@ -305,13 +313,10 @@ public class Journal {
         started = false;
     }
 
-    synchronized void cleanup() {
-        if (accessorPool != null) {
-            accessorPool.disposeUnused();
-        }
-    }
-
     public synchronized boolean clear() throws IOException {
+        if (started) {
+            throw new IllegalStateException("Cannot clear open journal!");
+        }
 
         // Close all open file handles...
         appender.close();
@@ -326,7 +331,7 @@ public class Journal {
         fileMap.clear();
         fileByFileMap.clear();
         lastAppendLocation.set(null);
-        dataFiles = new LinkedList<DataFile>();
+        dataFiles.clear();
 
         // reopen open file handles...
         accessorPool = new DataFileAccessorPool(this);
@@ -335,6 +340,10 @@ public class Journal {
     }
 
     public synchronized void removeDataFiles(Set<Integer> files) throws IOException {
+        if (started) {
+            throw new IllegalStateException("Cannot remove data files from open journal!");
+        }
+        
         for (Integer key : files) {
             // Can't remove the data file (or subsequent files) that is currently being written to.
             if (key >= lastAppendLocation.get().getDataFileId()) {
@@ -347,7 +356,7 @@ public class Journal {
         }
     }
 
-    private synchronized void forceRemoveDataFile(DataFile dataFile) throws IOException {
+    private void forceRemoveDataFile(DataFile dataFile) throws IOException {
         accessorPool.disposeDataFileAccessors(dataFile);
         fileByFileMap.remove(dataFile.getFile());
         fileMap.remove(dataFile.getDataFileId());
@@ -383,34 +392,12 @@ public class Journal {
         return directory.toString();
     }
 
-    public synchronized void appendedExternally(Location loc, int length) throws IOException {
-        DataFile dataFile = null;
-        if (dataFiles.getLast().getDataFileId() == loc.getDataFileId()) {
-            // It's an update to the current log file..
-            dataFile = dataFiles.getLast();
-            dataFile.incrementLength(length);
-        } else if (dataFiles.getLast().getDataFileId() + 1 == loc.getDataFileId()) {
-            // It's an update to the next log file.
-            int nextNum = loc.getDataFileId();
-            File file = getFile(nextNum);
-            dataFile = new DataFile(file, nextNum, preferredFileLength);
-            // actually allocate the disk space
-            fileMap.put(dataFile.getDataFileId(), dataFile);
-            fileByFileMap.put(file, dataFile);
-            if (!dataFiles.isEmpty()) dataFiles.getLast().setNext(dataFile);
-            dataFiles.addLast(dataFile);
-        } else {
-            throw new IOException("Invalid external append.");
-        }
-    }
-
-    public synchronized Location getNextLocation(Location location) throws IOException, IllegalStateException {
-
+    public Location getNextLocation(Location location) throws IOException, IllegalStateException {
         Location cur = null;
         while (true) {
             if (cur == null) {
                 if (location == null) {
-                    DataFile head = dataFiles.getFirst();
+                    DataFile head = dataFiles.get(0);
                     if (head == null) {
                         return null;
                     }
@@ -428,7 +415,6 @@ public class Journal {
             } else {
                 cur.setOffset(cur.getOffset() + cur.getSize());
             }
-
 
             if (!readLocationDetails(cur)) {
                 return null;
@@ -466,8 +452,8 @@ public class Journal {
         }
         return true;
     }
-    
-    public synchronized ByteBuffer read(Location location) throws IOException, IllegalStateException {
+
+    public ByteBuffer read(Location location) throws IOException, IllegalStateException {
         DataFile dataFile = getDataFile(location);
         DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
         Buffer rc = null;
@@ -479,24 +465,14 @@ public class Journal {
         return rc.toByteBuffer();
     }
 
-    public synchronized Location write(ByteBuffer data, boolean sync) throws IOException, IllegalStateException {
+    public Location write(ByteBuffer data, boolean sync) throws IOException, IllegalStateException {
         Location loc = appender.storeItem(new Buffer(data), Location.USER_TYPE, sync);
         return loc;
     }
 
-    public synchronized Location write(ByteBuffer data, Object attachment) throws IOException, IllegalStateException {
+    public Location write(ByteBuffer data, Object attachment) throws IOException, IllegalStateException {
         Location loc = appender.storeItem(new Buffer(data), Location.USER_TYPE, attachment);
         return loc;
-    }
-
-    public void update(Location location, ByteBuffer data, boolean sync) throws IOException {
-        DataFile dataFile = getDataFile(location);
-        DataFileAccessor updater = accessorPool.openDataFileAccessor(dataFile);
-        try {
-            updater.updateRecord(location, new Buffer(data), sync);
-        } finally {
-            accessorPool.closeDataFileAccessor(updater);
-        }
     }
 
     public File getDirectory() {
@@ -543,11 +519,11 @@ public class Journal {
         this.archiveDataLogs = archiveDataLogs;
     }
 
-    synchronized public Integer getCurrentDataFileId() {
+    public Integer getCurrentDataFileId() {
         if (dataFiles.isEmpty()) {
             return null;
         }
-        return dataFiles.getLast().getDataFileId();
+        return dataFiles.get(dataFiles.size() - 1).getDataFileId();
     }
 
     /**
@@ -565,10 +541,8 @@ public class Journal {
 
     public long getDiskSize() {
         long tailLength = 0;
-        synchronized (this) {
-            if (!dataFiles.isEmpty()) {
-                tailLength = dataFiles.getLast().getLength();
-            }
+        if (!dataFiles.isEmpty()) {
+            tailLength = dataFiles.get(dataFiles.size() - 1).getLength();
         }
 
         long rc = totalLength.get();
@@ -624,4 +598,5 @@ public class Journal {
     public int getPreferredFileLength() {
         return preferredFileLength;
     }
+
 }

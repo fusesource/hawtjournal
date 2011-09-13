@@ -22,6 +22,9 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -121,6 +124,35 @@ public class JournalTest {
             journal.write(data, true);
             assertTrue("queued data is written", journal.getInflightWrites().isEmpty());
         }
+    }
+
+    @Test
+    public void testConcurrentWriteAndRead() throws Exception {
+        final AtomicInteger counter = new AtomicInteger(0);
+        ExecutorService executor = Executors.newCachedThreadPool();
+        int iterations = 1000;
+        //
+        for (int i = 0; i < iterations; i++) {
+            final int index = i;
+            executor.submit(new Runnable() {
+
+                public void run() {
+                    try {
+                        boolean sync = index % 2 == 0 ? true : false;
+                        Location location = journal.write(ByteBuffer.wrap(new String("DATA" + index).getBytes("UTF-8")), sync);
+                        if (new String(journal.read(location).array(), "UTF-8").equals("DATA" + index)) {
+                            counter.incrementAndGet();
+                        }
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                }
+
+            });
+        }
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(1, TimeUnit.MINUTES));
+        assertEquals(iterations, counter.get());
     }
 
     protected void configure(Journal dataManager) {
