@@ -90,6 +90,7 @@ class DataFileAccessorPool {
 
     DataFileAccessorPool(Journal journal) {
         this.journal = journal;
+        this.maxOpenReadersPerFile = journal.getMaxReadersPerFile();
     }
 
     synchronized void clearUsedMark() {

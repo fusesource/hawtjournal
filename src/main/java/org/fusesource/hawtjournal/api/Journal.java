@@ -70,6 +70,8 @@ public class Journal {
     public static final int DEFAULT_CLEANUP_INTERVAL = 1000 * 30;
     public static final int PREFERRED_DIFF = 1024 * 512;
     //
+    public static final int DEFAULT_MAX_READERS_PER_FILE = Runtime.getRuntime().availableProcessors();
+    //
     protected static final int DEFAULT_MAX_BATCH_SIZE = 1024 * 1024 * 4;
     //
     private static final int MAX_BATCH_SIZE = 32 * 1024 * 1024;
@@ -81,6 +83,7 @@ public class Journal {
     private String filePrefix = DEFAULT_FILE_PREFIX;
     private String fileSuffix = DEFAULT_FILE_SUFFIX;
     private boolean opened;
+    private int maxReadersPerFile = DEFAULT_MAX_READERS_PER_FILE;
     private int maxFileLength = DEFAULT_MAX_FILE_LENGTH;
     private int preferredFileLength = DEFAULT_MAX_FILE_LENGTH - PREFERRED_DIFF;
     private DataFileAppender appender;
@@ -436,6 +439,14 @@ public class Journal {
 
     public int getPreferredFileLength() {
         return preferredFileLength;
+    }
+
+    public int getMaxReadersPerFile() {
+        return maxReadersPerFile;
+    }
+
+    public void setMaxReadersPerFile(int maxReadersPerFile) {
+        this.maxReadersPerFile = maxReadersPerFile;
     }
 
     void addToTotalLength(int size) {
