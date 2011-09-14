@@ -322,7 +322,7 @@ class DataFileAppender {
             };
             writer.setPriority(Thread.MAX_PRIORITY);
             writer.setDaemon(true);
-            writer.setName("DataFileAppender Thread");
+            writer.setName("DataFileAppender Writer Thread");
             writer.start();
         }
     }

@@ -232,16 +232,10 @@ public class Journal {
         }
     }
 
-    /**
-     * @return the maxFileLength
-     */
     public int getMaxFileLength() {
         return maxFileLength;
     }
 
-    /**
-     * @param maxFileLength the maxFileLength to set
-     */
     public void setMaxFileLength(int maxFileLength) {
         this.maxFileLength = maxFileLength;
     }

@@ -27,31 +27,12 @@ import java.io.OutputStream;
 /**
  */
 public final class IOHelper {
+
     protected static final int MAX_DIR_NAME_LENGTH;
     protected static final int MAX_FILE_NAME_LENGTH;
     private static final int DEFAULT_BUFFER_SIZE = 4096;
+
     private IOHelper() {
-    }
-
-    public static String getDefaultDataDirectory() {
-        return getDefaultDirectoryPrefix() + "activemq-data";
-    }
-
-    public static String getDefaultStoreDirectory() {
-        return getDefaultDirectoryPrefix() + "amqstore";
-    }
-
-    /**
-     * Allows a system property to be used to overload the default data
-     * directory which can be useful for forcing the test cases to use a target/
-     * prefix
-     */
-    public static String getDefaultDirectoryPrefix() {
-        try {
-            return System.getProperty("org.apache.activemq.default.directory.prefix", "");
-        } catch (Exception e) {
-            return "";
-        }
     }
 
     /**
@@ -64,11 +45,11 @@ public final class IOHelper {
     public static String toFileSystemDirectorySafeName(String name) {
         return toFileSystemSafeName(name, true, MAX_DIR_NAME_LENGTH);
     }
-    
+
     public static String toFileSystemSafeName(String name) {
         return toFileSystemSafeName(name, false, MAX_FILE_NAME_LENGTH);
     }
-    
+
     /**
      * Converts any string into a string that is safe to use as a file name.
      * The result will only include ascii characters and numbers, and the "-","_", and "." characters.
@@ -78,7 +59,7 @@ public final class IOHelper {
      * @param maxFileLength 
      * @return
      */
-    public static String toFileSystemSafeName(String name,boolean dirSeparators,int maxFileLength) {
+    public static String toFileSystemSafeName(String name, boolean dirSeparators, int maxFileLength) {
         int size = name.length();
         StringBuffer rc = new StringBuffer(size * 2);
         for (int i = 0; i < size; i++) {
@@ -86,8 +67,8 @@ public final class IOHelper {
             boolean valid = c >= 'a' && c <= 'z';
             valid = valid || (c >= 'A' && c <= 'Z');
             valid = valid || (c >= '0' && c <= '9');
-            valid = valid || (c == '_') || (c == '-') || (c == '.') || (c=='#')
-                    ||(dirSeparators && ( (c == '/') || (c == '\\')));
+            valid = valid || (c == '_') || (c == '-') || (c == '.') || (c == '#')
+                    || (dirSeparators && ((c == '/') || (c == '\\')));
 
             if (valid) {
                 rc.append(c);
@@ -99,11 +80,11 @@ public final class IOHelper {
         }
         String result = rc.toString();
         if (result.length() > maxFileLength) {
-            result = result.substring(result.length()-maxFileLength,result.length());
+            result = result.substring(result.length() - maxFileLength, result.length());
         }
         return result;
     }
-    
+
     public static boolean deleteFile(File fileToDelete) {
         if (fileToDelete == null || !fileToDelete.exists()) {
             return true;
@@ -112,7 +93,7 @@ public final class IOHelper {
         result &= fileToDelete.delete();
         return result;
     }
-    
+
     public static boolean deleteChildren(File parent) {
         if (parent == null || !parent.exists()) {
             return false;
@@ -137,23 +118,22 @@ public final class IOHelper {
                 }
             }
         }
-       
+
         return result;
     }
-    
-    
+
     public static void moveFile(File src, File targetDirectory) throws IOException {
         if (!src.renameTo(new File(targetDirectory, src.getName()))) {
             throw new IOException("Failed to move " + src + " to " + targetDirectory);
         }
     }
-    
+
     public static void copyFile(File src, File dest) throws IOException {
         FileInputStream fileSrc = new FileInputStream(src);
         FileOutputStream fileDest = new FileOutputStream(dest);
         copyInputStream(fileSrc, fileDest);
     }
-    
+
     public static void copyInputStream(InputStream in, OutputStream out) throws IOException {
         byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
         int len = in.read(buffer);
@@ -164,38 +144,38 @@ public final class IOHelper {
         in.close();
         out.close();
     }
-    
+
     static {
-        MAX_DIR_NAME_LENGTH = Integer.valueOf(System.getProperty("MaximumDirNameLength","200")).intValue();  
-        MAX_FILE_NAME_LENGTH = Integer.valueOf(System.getProperty("MaximumFileNameLength","64")).intValue();             
+        MAX_DIR_NAME_LENGTH = Integer.valueOf(System.getProperty("MaximumDirNameLength", "200")).intValue();
+        MAX_FILE_NAME_LENGTH = Integer.valueOf(System.getProperty("MaximumFileNameLength", "64")).intValue();
     }
 
-    
     public static void mkdirs(File dir) throws IOException {
         if (dir.exists()) {
             if (!dir.isDirectory()) {
-                throw new IOException("Failed to create directory '" + dir +"', regular file already existed with that name");
+                throw new IOException("Failed to create directory '" + dir + "', regular file already existed with that name");
             }
-            
+
         } else {
             if (!dir.mkdirs()) {
-                throw new IOException("Failed to create directory '" + dir+"'");
+                throw new IOException("Failed to create directory '" + dir + "'");
             }
         }
     }
-    
-	public interface IOStrategy {
-		void sync(FileDescriptor fdo) throws IOException;
-	}	
-	
-	static final IOStrategy IO_STRATEGY = createIOStrategy();
-	
-	private static IOStrategy createIOStrategy() {
-		
-		// On OS X, the fsync system call does not fully flush the hardware buffers.. 
-		// to do that you have to do an fcntl call, and the only way to do that is to
-		// do some JNI.  
-		String os = System.getProperty("os.name");
+
+    public interface IOStrategy {
+
+        void sync(FileDescriptor fdo) throws IOException;
+
+    }
+    static final IOStrategy IO_STRATEGY = createIOStrategy();
+
+    private static IOStrategy createIOStrategy() {
+
+        // On OS X, the fsync system call does not fully flush the hardware buffers..
+        // to do that you have to do an fcntl call, and the only way to do that is to
+        // do some JNI.
+        String os = System.getProperty("os.name");
 //		if( "Mac OS X".equals(os) ) {
 //
 //			// We will gracefully fall back to default JDK file sync behavior
@@ -222,23 +202,18 @@ public final class IOHelper {
 //				// the disk syncs are not going to be of very good quality.
 //			}
 //		}
-		
-		return new IOStrategy() {
-			public void sync(FileDescriptor fd) throws IOException {
-				fd.sync();
-			}
-		};
-	}
 
-//	@SuppressWarnings("unchecked")
-//	public static CLibrary getCLibrary() throws ClassNotFoundException, IllegalAccessException, NoSuchFieldException {
-//		Class clazz = IOHelper.class.getClassLoader().loadClass("org.apache.activemq.util.os.JnaCLibrary");
-//		final CLibrary lib = (CLibrary) clazz.getField("INSTANCE").get(null);
-//		return lib;
-//	}
-	
-	static public void sync(FileDescriptor fd) throws IOException {
-		IO_STRATEGY.sync(fd);
-	}
+        return new IOStrategy() {
+
+            public void sync(FileDescriptor fd) throws IOException {
+                fd.sync();
+            }
+
+        };
+    }
+
+    static public void sync(FileDescriptor fd) throws IOException {
+        IO_STRATEGY.sync(fd);
+    }
 
 }
