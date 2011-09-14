@@ -72,6 +72,21 @@ public class JournalTest {
     }
 
     @Test
+    public void testWriteDeleteAndReplay() throws Exception {
+        int iterations = 10;
+        for (int i = 0; i < iterations; i++) {
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
+        }
+        journal.delete(journal.firstLocation());
+        Location location = journal.firstLocation();
+        for (int i = 1; i < iterations; i++) {
+            ByteBuffer buffer = journal.read(location);
+            location = journal.nextLocation(location);
+            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
+        }
+    }
+
+    @Test
     public void testSyncWriteAndRead() throws Exception {
         int iterations = 10;
         List<Location> locations = new ArrayList<Location>(iterations);

@@ -24,7 +24,11 @@ import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.Adler32;
@@ -126,6 +130,38 @@ class DataFileAppender {
 
     }
 
+    public class WriteFuture implements Future<Boolean> {
+
+        private final CountDownLatch latch;
+
+        public WriteFuture(CountDownLatch latch) {
+            this.latch = latch;
+        }
+
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            throw new UnsupportedOperationException("Cannot cancel this type of future!");
+        }
+
+        public boolean isCancelled() {
+            throw new UnsupportedOperationException("Cannot cancel this type of future!");
+        }
+
+        public boolean isDone() {
+            return latch.getCount() == 0;
+        }
+
+        public Boolean get() throws InterruptedException, ExecutionException {
+            latch.await();
+            return true;
+        }
+
+        public Boolean get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
+            boolean success = latch.await(timeout, unit);
+            return success;
+        }
+
+    }
+
     DataFileAppender(Journal journal) {
         this.journal = journal;
         this.inflightWrites = journal.getInflightWrites();
@@ -167,6 +203,38 @@ class DataFileAppender {
 
         location.setLatch(batch.latch);
         return location;
+    }
+
+    Future<Boolean> sync() throws IOException {
+        int spinnings = 0;
+        int limit = 100;
+        while (true) {
+            try {
+                if (batching.compareAndSet(false, true)) {
+                    Future result = null;
+                    if (nextWriteBatch != null) {
+                        result = new WriteFuture(nextWriteBatch.latch);
+                        batchQueue.put(nextWriteBatch);
+                        nextWriteBatch = null;
+                    } else {
+                        result = new WriteFuture(new CountDownLatch(0));
+                    }
+                    batching.set(false);
+                    return result;
+                } else {
+                    // Spin waiting for new batch ...
+                    if (spinnings <= limit) {
+                        spinnings++;
+                        continue;
+                    } else {
+                        Thread.sleep(250);
+                        continue;
+                    }
+                }
+            } catch (InterruptedException ex) {
+                throw new IllegalStateException(ex.getMessage(), ex);
+            }
+        }
     }
 
     private WriteBatch enqueue(WriteCommand write) throws IOException {

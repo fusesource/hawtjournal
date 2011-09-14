@@ -18,12 +18,12 @@ package org.fusesource.hawtjournal.api;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.util.concurrent.ConcurrentMap;
 import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
 import org.fusesource.hawtbuf.Buffer;
+import org.fusesource.hawtjournal.util.IOHelper;
 
 /**
- * Optimized reader, single threaded and synchronous.<br>
+ * Optimized reader/updater, single threaded and synchronous.<br>
  * Use in conjunction with the DataFileAccessorPool for concurrent use.
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
@@ -32,13 +32,13 @@ import org.fusesource.hawtbuf.Buffer;
 class DataFileAccessor {
 
     private final DataFile dataFile;
-    private final ConcurrentMap<Location, WriteCommand> inflightWrites;
+    private final Journal journal;
     private final RandomAccessFile file;
     private boolean disposed;
 
-    DataFileAccessor(Journal dataManager, DataFile dataFile) throws IOException {
+    DataFileAccessor(Journal journal, DataFile dataFile) throws IOException {
         this.dataFile = dataFile;
-        this.inflightWrites = dataManager.getInflightWrites();
+        this.journal = journal;
         this.file = dataFile.openRandomAccessFile();
     }
 
@@ -58,12 +58,26 @@ class DataFileAccessor {
         }
     }
 
+    synchronized void updateRecord(Location location, byte type, boolean sync) throws IOException {
+        if (!location.isValid()) {
+            throw new IOException("Invalid location: " + location);
+        }
+
+        journal.sync();
+        file.seek(location.getOffset() + Journal.RECORD_SIZE);
+        file.write(type);
+        location.setType(type);
+        if (sync) {
+            IOHelper.sync(file.getFD());
+        }
+    }
+
     synchronized Buffer readRecord(Location location) throws IOException {
         if (!location.isValid()) {
             throw new IOException("Invalid location: " + location);
         }
 
-        WriteCommand asyncWrite = inflightWrites.get(location);
+        WriteCommand asyncWrite = journal.getInflightWrites().get(location);
         if (asyncWrite != null) {
             return asyncWrite.data;
         }
@@ -86,13 +100,13 @@ class DataFileAccessor {
         }
     }
 
-    synchronized void read(long offset, byte data[]) throws IOException {
+    synchronized void readFile(long offset, byte data[]) throws IOException {
         file.seek(offset);
         file.readFully(data);
     }
 
-    synchronized void readLocationDetails(Location location) throws IOException {
-        WriteCommand asyncWrite = inflightWrites.get(location);
+    synchronized void updateLocationDetails(Location location) throws IOException {
+        WriteCommand asyncWrite = journal.getInflightWrites().get(location);
         if (asyncWrite != null) {
             location.setSize(asyncWrite.location.getSize());
             location.setType(asyncWrite.location.getType());
@@ -102,4 +116,5 @@ class DataFileAccessor {
             location.setType(file.readByte());
         }
     }
+
 }

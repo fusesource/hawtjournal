@@ -29,7 +29,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -51,6 +53,7 @@ public class Journal {
 
     public static final byte USER_RECORD_TYPE = 1;
     public static final byte BATCH_CONTROL_RECORD_TYPE = 2;
+    public static final byte DELETED_RECORD_TYPE = 3;
     //
     public static final int RECORD_SIZE = 4;
     public static final int TYPE_SIZE = 1;
@@ -247,59 +250,47 @@ public class Journal {
     }
 
     public Location firstLocation() throws IOException, IllegalStateException {
-        Location cur = null;
         DataFile head = dataFiles.get(0);
         if (head == null) {
             return null;
         } else {
-            cur = new Location();
-            cur.setDataFileId(head.getDataFileId());
-            cur.setOffset(Journal.BATCH_CONTROL_RECORD_SIZE);
-        }
-        if (!readLocationDetails(cur)) {
-            return null;
-        } else {
-            return cur;
-        }
-    }
-
-    public Location nextLocation(Location location) throws IOException, IllegalStateException {
-        Location cur = null;
-        if (location.getSize() == -1 && !readLocationDetails(location)) {
-            return null;
-        } else {
-            cur = new Location(location);
-            cur.setOffset(location.getOffset() + location.getSize());
-        }
-        if (!readLocationDetails(cur)) {
-            return null;
-        } else {
-            return cur;
-        }
-    }
-
-    public boolean readLocationDetails(Location cur) throws IOException {
-        DataFile dataFile = getDataFile(cur);
-
-        // Did it go into the next file??
-        if (dataFile.getLength() <= cur.getOffset()) {
-            dataFile = getNextDataFile(dataFile);
-            if (dataFile == null) {
-                return false;
+            Location candidate = new Location();
+            candidate.setDataFileId(head.getDataFileId());
+            candidate.setOffset(Journal.BATCH_CONTROL_RECORD_SIZE);
+            if (!verifyLocationDetails(candidate)) {
+                return null;
             } else {
-                cur.setDataFileId(dataFile.getDataFileId().intValue());
-                cur.setOffset(0);
+                if (candidate.getType() == USER_RECORD_TYPE) {
+                    return candidate;
+                } else {
+                    return nextLocation(candidate);
+                }
             }
         }
+    }
 
-        // Load in location size and type.
-        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
-        try {
-            reader.readLocationDetails(cur);
-        } finally {
-            accessorPool.closeDataFileAccessor(reader);
+    public Location nextLocation(Location start) throws IOException {
+        if (start.getSize() == -1 && !verifyLocationDetails(start)) {
+            return null;
+        } else {
+            Location current = start;
+            Location next = null;
+            while (next == null) {
+                Location candidate = new Location(current);
+                candidate.setOffset(current.getOffset() + current.getSize());
+                if (!verifyLocationDetails(candidate)) {
+                    break;
+                } else {
+                    if (candidate.getType() == USER_RECORD_TYPE) {
+                        next = candidate;
+                    } else {
+                        current = candidate;
+                        continue;
+                    }
+                }
+            }
+            return next;
         }
-        return true;
     }
 
     public ByteBuffer read(Location location) throws IOException, IllegalStateException {
@@ -315,13 +306,23 @@ public class Journal {
     }
 
     public Location write(ByteBuffer data, boolean sync) throws IOException, IllegalStateException {
-        Location loc = appender.storeItem(new Buffer(data), Location.USER_TYPE, sync);
+        Location loc = appender.storeItem(new Buffer(data), Journal.USER_RECORD_TYPE, sync);
         return loc;
     }
 
     public Location write(ByteBuffer data, Object attachment) throws IOException, IllegalStateException {
-        Location loc = appender.storeItem(new Buffer(data), Location.USER_TYPE, attachment);
+        Location loc = appender.storeItem(new Buffer(data), Journal.USER_RECORD_TYPE, attachment);
         return loc;
+    }
+
+    public void delete(Location location) throws IOException, IllegalStateException {
+        DataFile dataFile = getDataFile(location);
+        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
+        try {
+            reader.updateRecord(location, DELETED_RECORD_TYPE, true);
+        } finally {
+            accessorPool.closeDataFileAccessor(reader);
+        }
     }
 
     public File getDirectory() {
@@ -375,11 +376,6 @@ public class Journal {
         return dataFiles.get(dataFiles.size() - 1).getDataFileId();
     }
 
-    /**
-     * Get a set of files - only valid after start()
-     * 
-     * @return files currently being used
-     */
     public Set<File> getFiles() {
         return fileByFileMap.keySet();
     }
@@ -448,6 +444,14 @@ public class Journal {
         totalLength.addAndGet(size);
     }
 
+    void sync() throws IOException {
+        try {
+            appender.sync().get();
+        } catch (Exception ex) {
+            throw new IllegalStateException(ex.getMessage(), ex);
+        }
+    }
+
     DataFile getCurrentWriteFile() throws IOException {
         if (dataFiles.isEmpty()) {
             rotateWriteFile();
@@ -467,6 +471,30 @@ public class Journal {
         }
         dataFiles.add(nextWriteFile);
         return nextWriteFile;
+    }
+
+    private boolean verifyLocationDetails(Location cur) throws IOException {
+        DataFile dataFile = getDataFile(cur);
+
+        // Did it go into the next file??
+        if (dataFile.getLength() <= cur.getOffset()) {
+            dataFile = getNextDataFile(dataFile);
+            if (dataFile == null) {
+                return false;
+            } else {
+                cur.setDataFileId(dataFile.getDataFileId().intValue());
+                cur.setOffset(0);
+            }
+        }
+
+        // Load in location size and type.
+        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
+        try {
+            reader.updateLocationDetails(cur);
+        } finally {
+            accessorPool.closeDataFileAccessor(reader);
+        }
+        return true;
     }
 
     private File getFile(int nextNum) {
@@ -518,7 +546,7 @@ public class Journal {
         DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
         try {
             while (true) {
-                reader.read(location.getOffset(), controlRecord);
+                reader.readFile(location.getOffset(), controlRecord);
                 controlIs.restart();
 
                 // Assert that it's  a batch record.
@@ -544,7 +572,7 @@ public class Journal {
                     long expectedChecksum = controlIs.readLong();
 
                     byte data[] = new byte[size];
-                    reader.read(location.getOffset() + BATCH_CONTROL_RECORD_SIZE, data);
+                    reader.readFile(location.getOffset() + BATCH_CONTROL_RECORD_SIZE, data);
 
                     Checksum checksum = new Adler32();
                     checksum.update(data, 0, data.length);

@@ -25,10 +25,10 @@ import java.util.concurrent.CountDownLatch;
  * Used as a location in the journal.
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
+ * @author Sergio Bossa
  */
 public final class Location implements Comparable<Location> {
 
-    public static final byte USER_TYPE = 1;
     public static final byte NOT_SET_TYPE = 0;
     public static final int NOT_SET = -1;
 
@@ -54,7 +54,7 @@ public final class Location implements Comparable<Location> {
     }
 
     boolean isValid() {
-        return dataFileId != NOT_SET;
+        return dataFileId != NOT_SET && type != Journal.DELETED_RECORD_TYPE;
     }
 
     /**
