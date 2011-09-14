@@ -19,6 +19,7 @@ package org.fusesource.hawtjournal.api;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -58,7 +59,7 @@ public class JournalTest {
     }
 
     @Test
-    public void testWriteAndReplay() throws Exception {
+    public void testWriteAndReplayLog() throws Exception {
         int iterations = 10;
         for (int i = 0; i < iterations; i++) {
             journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
@@ -72,7 +73,7 @@ public class JournalTest {
     }
 
     @Test
-    public void testWriteDeleteAndReplay() throws Exception {
+    public void testWriteAndReplayLogWithDeletes() throws Exception {
         int iterations = 10;
         for (int i = 0; i < iterations; i++) {
             journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
@@ -84,6 +85,14 @@ public class JournalTest {
             location = journal.nextLocation(location);
             assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
         }
+    }
+
+    @Test(expected = IOException.class)
+    public void testCannotReadDeletedLocation() throws Exception {
+        Location location = journal.write(ByteBuffer.wrap("DATA".getBytes("UTF-8")), false);
+        journal.delete(location);
+        journal.read(location);
+        fail("Should have raised IOException!");
     }
 
     @Test
