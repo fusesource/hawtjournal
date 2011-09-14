@@ -31,7 +31,7 @@ class DataFile implements Comparable<DataFile> {
     private volatile DataFile next;
     private volatile int length;
 
-    DataFile(File file, int number, int preferedSize) {
+    DataFile(File file, int number) {
         this.file = file;
         this.dataFileId = Integer.valueOf(number);
         length = (int) (file.exists() ? file.length() : 0);

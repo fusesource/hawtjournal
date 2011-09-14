@@ -29,9 +29,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -131,7 +129,7 @@ public class Journal {
                     String n = file.getName();
                     String numStr = n.substring(filePrefix.length(), n.length() - fileSuffix.length());
                     int num = Integer.parseInt(numStr);
-                    DataFile dataFile = new DataFile(file, num, preferredFileLength);
+                    DataFile dataFile = new DataFile(file, num);
                     fileMap.put(dataFile.getDataFileId(), dataFile);
                     totalLength.addAndGet(dataFile.getLength());
                 } catch (NumberFormatException e) {
@@ -462,7 +460,7 @@ public class Journal {
     DataFile rotateWriteFile() {
         int nextNum = !dataFiles.isEmpty() ? dataFiles.get(dataFiles.size() - 1).getDataFileId().intValue() + 1 : 1;
         File file = getFile(nextNum);
-        DataFile nextWriteFile = new DataFile(file, nextNum, preferredFileLength);
+        DataFile nextWriteFile = new DataFile(file, nextNum);
         // actually allocate the disk space
         fileMap.put(nextWriteFile.getDataFileId(), nextWriteFile);
         fileByFileMap.put(file, nextWriteFile);
