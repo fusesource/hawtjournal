@@ -206,7 +206,7 @@ public class JournalTest {
     @Test
     public void testConcurrentWriteAndRead() throws Exception {
         final AtomicInteger counter = new AtomicInteger(0);
-        ExecutorService executor = Executors.newCachedThreadPool();
+        ExecutorService executor = Executors.newFixedThreadPool(25);
         int iterations = 1000;
         //
         for (int i = 0; i < iterations; i++) {
