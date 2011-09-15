@@ -44,7 +44,10 @@ import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
 import static org.fusesource.hawtjournal.util.LogHelper.*;
 
 /**
- * Main Journal APIs.
+ * Journal implementation based on append-only rotating logs and checksummed records, with fixed concurrent reads,
+ * full concurrent writes, dynamic batching and "dead" logs cleanup.<br/>
+ * Journal records can be written, read and deleted by providing a {@link Location} object.<br/>
+ * The whole journal can be replayed by simply iterating through it in a foreach block.<br/>
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  * @author Sergio Bossa
@@ -75,7 +78,7 @@ public class Journal implements Iterable<Location> {
     //
     public static final int DEFAULT_MAX_READERS_PER_FILE = Runtime.getRuntime().availableProcessors();
     //
-    protected static final int DEFAULT_MAX_BATCH_SIZE = DEFAULT_MAX_FILE_LENGTH;
+    public static final int DEFAULT_MAX_BATCH_SIZE = DEFAULT_MAX_FILE_LENGTH;
     //
     private final ConcurrentNavigableMap<Location, WriteCommand> inflightWrites = new ConcurrentSkipListMap<Location, WriteCommand>();
     //
@@ -104,6 +107,11 @@ public class Journal implements Iterable<Location> {
     //
     private ScheduledExecutorService scheduler;
 
+    /**
+     * Open the journal, eventually recovering it if already existent.
+     *
+     * @throws IOException
+     */
     public synchronized void open() throws IOException {
         if (opened) {
             return;
@@ -182,6 +190,11 @@ public class Journal implements Iterable<Location> {
         trace("Startup took: %d ms", (end - start));
     }
 
+    /**
+     * Close the journal.
+     *
+     * @throws IOException
+     */
     public synchronized void close() throws IOException {
         if (!opened) {
             return;
@@ -196,6 +209,11 @@ public class Journal implements Iterable<Location> {
         opened = false;
     }
 
+    /**
+     * Cleanup the journal from logs having only deleted entries.
+     *
+     * @throws IOException
+     */
     public synchronized void cleanup() throws IOException {
         if (!opened) {
             return;
@@ -212,18 +230,14 @@ public class Journal implements Iterable<Location> {
         }
     }
 
-    public int getMaxFileLength() {
-        return maxFileLength;
-    }
-
-    public void setMaxFileLength(int maxFileLength) {
-        this.maxFileLength = maxFileLength;
-    }
-
-    public String toString() {
-        return directory.toString();
-    }
-
+    /**
+     * Read the record stored at the given {@link Location}.
+     *
+     * @param location
+     * @return
+     * @throws IOException
+     * @throws IllegalStateException
+     */
     public ByteBuffer read(Location location) throws IOException, IllegalStateException {
         DataFile dataFile = getDataFile(location);
         DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
@@ -236,16 +250,43 @@ public class Journal implements Iterable<Location> {
         return rc.toByteBuffer();
     }
 
+    /**
+     * Write the given byte buffer record, either sync or async, and returns the stored {@link Location}.<br/>
+     * A sync write causes all previously batched async writes to be synced too.
+     *
+     * @param data
+     * @param sync True if sync, false if async.
+     * @return
+     * @throws IOException
+     * @throws IllegalStateException
+     */
     public Location write(ByteBuffer data, boolean sync) throws IOException, IllegalStateException {
         Location loc = appender.storeItem(new Buffer(data), Journal.USER_RECORD_TYPE, sync);
         return loc;
     }
 
+    /**
+     * Write the given byte buffer record, carrying the given (non-persistent) attached object, and returns the stored {@link Location}.<br/>
+     * This write call is always async.
+     *
+     * @param data
+     * @param attachment
+     * @return
+     * @throws IOException
+     * @throws IllegalStateException
+     */
     public Location write(ByteBuffer data, Object attachment) throws IOException, IllegalStateException {
         Location loc = appender.storeItem(new Buffer(data), Journal.USER_RECORD_TYPE, attachment);
         return loc;
     }
 
+    /**
+     * Delete the record at the given {@link Location}.<br/>
+     * Deletes cause first a batch sync and always are logical: records will be actually deleted at log cleanup time.
+     * @param location
+     * @throws IOException
+     * @throws IllegalStateException
+     */
     public void delete(Location location) throws IOException, IllegalStateException {
         DataFile dataFile = getDataFile(location);
         DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
@@ -256,6 +297,11 @@ public class Journal implements Iterable<Location> {
         }
     }
 
+    /**
+     * Return an iterator to replay the journal by going through all records locations.
+     *
+     * @return
+     */
     public Iterator<Location> iterator() {
         return new Iterator<Location>() {
 
@@ -302,103 +348,194 @@ public class Journal implements Iterable<Location> {
         };
     }
 
-    public File getDirectory() {
-        return directory;
-    }
-
-    public void setDirectory(File directory) {
-        this.directory = directory;
-    }
-
-    public String getFilePrefix() {
-        return filePrefix;
-    }
-
-    public void setFilePrefix(String filePrefix) {
-        this.filePrefix = filePrefix;
-    }
-
-    public Location getLastAppendLocation() {
-        return lastAppendLocation.get();
-    }
-
-    public void setLastAppendLocation(Location lastSyncedLocation) {
-        this.lastAppendLocation.set(lastSyncedLocation);
-    }
-
-    public File getDirectoryArchive() {
-        return directoryArchive;
-    }
-
-    public void setDirectoryArchive(File directoryArchive) {
-        this.directoryArchive = directoryArchive;
-    }
-
-    public boolean isArchiveDataLogs() {
-        return archiveDataLogs;
-    }
-
-    public void setArchiveDataLogs(boolean archiveDataLogs) {
-        this.archiveDataLogs = archiveDataLogs;
-    }
-
-    public Integer getCurrentDataFileId() {
-        if (dataFiles.isEmpty()) {
-            return null;
-        }
-        return dataFiles.get(dataFiles.size() - 1).getDataFileId();
-    }
-
+    /**
+     * Get the files part of this journal.
+     * @return
+     */
     public Set<File> getFiles() {
         return fileByFileMap.keySet();
     }
 
+    /**
+     * Get the max length of each log file.
+     * @return
+     */
+    public int getMaxFileLength() {
+        return maxFileLength;
+    }
+
+    /**
+     * Set the max length of each log file.
+     */
+    public void setMaxFileLength(int maxFileLength) {
+        this.maxFileLength = maxFileLength;
+    }
+
+    /**
+     * Get the journal directory containing log files.
+     * @return
+     */
+    public File getDirectory() {
+        return directory;
+    }
+
+    /**
+     * Set the journal directory containing log files.
+     */
+    public void setDirectory(File directory) {
+        this.directory = directory;
+    }
+
+    /**
+     * Get the prefix for log files.
+     * @return
+     */
+    public String getFilePrefix() {
+        return filePrefix;
+    }
+
+    /**
+     * Set the prefix for log files.
+     * @param filePrefix
+     */
+    public void setFilePrefix(String filePrefix) {
+        this.filePrefix = filePrefix;
+    }
+
+    /**
+     * Get the optional archive directory used to archive cleaned up log files.
+     * @return
+     */
+    public File getDirectoryArchive() {
+        return directoryArchive;
+    }
+
+    /**
+     * Set the optional archive directory used to archive cleaned up log files.
+     * @param directoryArchive
+     */
+    public void setDirectoryArchive(File directoryArchive) {
+        this.directoryArchive = directoryArchive;
+    }
+
+    /**
+     * Return true if cleaned up log files should be archived, false otherwise.
+     * @return
+     */
+    public boolean isArchiveDataLogs() {
+        return archiveDataLogs;
+    }
+
+    /**
+     * Set true if cleaned up log files should be archived, false otherwise.
+     * @param archiveDataLogs
+     */
+    public void setArchiveDataLogs(boolean archiveDataLogs) {
+        this.archiveDataLogs = archiveDataLogs;
+    }
+
+    /**
+     * Set the {@link ReplicationTarget} to replicate batch writes to.
+     * @param replicationTarget
+     */
     public void setReplicationTarget(ReplicationTarget replicationTarget) {
         this.replicationTarget = replicationTarget;
     }
 
+    /**
+     * Get the {@link ReplicationTarget} to replicate batch writes to.
+     * @return
+     */
     public ReplicationTarget getReplicationTarget() {
         return replicationTarget;
     }
 
+    /**
+     * Get the suffix for log files.
+     * @return
+     */
     public String getFileSuffix() {
         return fileSuffix;
     }
 
+    /**
+     * Set the suffix for log files.
+     * @param fileSuffix
+     */
     public void setFileSuffix(String fileSuffix) {
         this.fileSuffix = fileSuffix;
     }
 
+    /**
+     * Return true if records checksum is enabled, false otherwise.
+     * @return
+     */
     public boolean isChecksum() {
         return checksum;
     }
 
+    /**
+     * Set true if records checksum is enabled, false otherwise.
+     * @param checksumWrites
+     */
     public void setChecksum(boolean checksumWrites) {
         this.checksum = checksumWrites;
     }
 
+    /**
+     * Get the max size in bytes of the write batch: must always be equal or less than the max file length.
+     * @return
+     */
     public int getMaxWriteBatchSize() {
         return maxWriteBatchSize;
     }
 
+    /**
+     * Set the max size in bytes of the write batch: must always be equal or less than the max file length.
+     * @param maxWriteBatchSize
+     */
     public void setMaxWriteBatchSize(int maxWriteBatchSize) {
         this.maxWriteBatchSize = maxWriteBatchSize;
     }
 
+    /**
+     * Get the {@link JournalListener} to notify when syncing batches.
+     * @return
+     */
     public JournalListener getListener() {
         return listener;
     }
 
+    /**
+     * Set the {@link JournalListener} to notify when syncing batches.
+     * @param listener
+     */
     public void setListener(JournalListener listener) {
         this.listener = listener;
     }
 
+    /**
+     * Get the max number of concurrent readers per log file.
+     * @return
+     */
     public int getMaxReadersPerFile() {
         return maxReadersPerFile;
     }
 
+    /**
+     * Set the max number of concurrent readers per log file.
+     * @param maxReadersPerFile
+     */
     public void setMaxReadersPerFile(int maxReadersPerFile) {
         this.maxReadersPerFile = maxReadersPerFile;
+    }
+
+    public String toString() {
+        return directory.toString();
+    }
+
+    void setLastAppendLocation(Location lastSyncedLocation) {
+        this.lastAppendLocation.set(lastSyncedLocation);
     }
 
     ConcurrentNavigableMap<Location, WriteCommand> getInflightWrites() {

@@ -22,16 +22,16 @@ import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * Used as a location in the journal.
+ * Represent a location inside the journal.
  * 
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  * @author Sergio Bossa
  */
 public final class Location implements Comparable<Location> {
 
-    public static final byte NOT_SET_TYPE = 0;
-    public static final int NOT_SET = -1;
-
+    static final byte NOT_SET_TYPE = 0;
+    static final int NOT_SET = -1;
+    //
     private volatile int dataFileId = NOT_SET;
     private volatile int offset = NOT_SET;
     private volatile int size = NOT_SET;
@@ -57,17 +57,11 @@ public final class Location implements Comparable<Location> {
         return dataFileId != NOT_SET && type == Journal.USER_RECORD_TYPE;
     }
 
-    /**
-     * @return the size of the data record including the header.
-     */
     public int getSize() {
         return size;
     }
 
-    /**
-     * @param size the size of the data record including the header.
-     */
-    public void setSize(int size) {
+    void setSize(int size) {
         this.size = size;
     }
 
@@ -75,7 +69,7 @@ public final class Location implements Comparable<Location> {
         return offset;
     }
 
-    public void setOffset(int offset) {
+    void setOffset(int offset) {
         this.offset = offset;
     }
 
@@ -83,7 +77,7 @@ public final class Location implements Comparable<Location> {
         return dataFileId;
     }
 
-    public void setDataFileId(int file) {
+    void setDataFileId(int file) {
         this.dataFileId = file;
     }
 
@@ -91,8 +85,16 @@ public final class Location implements Comparable<Location> {
         return type;
     }
 
-    public void setType(byte type) {
+    void setType(byte type) {
         this.type = type;
+    }
+
+    CountDownLatch getLatch() {
+        return latch;
+    }
+
+    void setLatch(CountDownLatch latch) {
+        this.latch = latch;
     }
 
     public String toString() {
@@ -111,14 +113,6 @@ public final class Location implements Comparable<Location> {
         offset = dis.readInt();
         size = dis.readInt();
         type = dis.readByte();
-    }
-
-    public CountDownLatch getLatch() {
-        return latch;
-    }
-
-    public void setLatch(CountDownLatch latch) {
-        this.latch = latch;
     }
 
     public int compareTo(Location o) {

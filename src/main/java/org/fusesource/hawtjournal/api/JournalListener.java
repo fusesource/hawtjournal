@@ -17,12 +17,16 @@
 package org.fusesource.hawtjournal.api;
 
 /**
+ * Listener interface, notified at batch syncing.
+ *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public interface JournalListener {
 
     public interface Write {
+
         Location getLocation();
+
         Object getAttachment();
     }
 

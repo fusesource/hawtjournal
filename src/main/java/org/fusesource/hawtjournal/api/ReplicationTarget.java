@@ -19,9 +19,11 @@ package org.fusesource.hawtjournal.api;
 import org.fusesource.hawtbuf.Buffer;
 
 /**
+ * Replicator interface, invoked to replicate whole data batches.
+ *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public interface ReplicationTarget {
 
-    void replicate(Location location, Buffer sequence, boolean sync);
+    void replicate(Location startLocation, Buffer data, boolean sync);
 }
