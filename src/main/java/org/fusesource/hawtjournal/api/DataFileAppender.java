@@ -395,16 +395,13 @@ class DataFileAppender {
                 }
 
                 if (!wb.writes.isEmpty()) {
-                    if (dataFile != wb.dataFile) {
+                    boolean newOrRotated = dataFile != wb.dataFile;
+                    if (newOrRotated) {
                         if (file != null) {
-                            file.setLength(dataFile.getLength());
                             dataFile.closeRandomAccessFile(file);
                         }
                         dataFile = wb.dataFile;
                         file = dataFile.openRandomAccessFile();
-                        if (file.length() < journal.getMaxFileLength()) {
-                            file.setLength(journal.getMaxFileLength());
-                        }
                     }
 
                     // Write an empty batch control record.
