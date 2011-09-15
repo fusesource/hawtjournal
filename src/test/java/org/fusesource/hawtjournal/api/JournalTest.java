@@ -125,6 +125,31 @@ public class JournalTest {
         }
     }
 
+    @Test
+    public void testWriteCleanupAndReplayLog() throws Exception {
+        int iterations = 1000;
+        for (int i = 0; i < iterations / 2; i++) {
+            boolean sync = i % 2 == 0 ? true : false;
+            Location toDelete = journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
+            journal.delete(toDelete);
+        }
+        for (int i = iterations / 2; i < iterations; i++) {
+            boolean sync = i % 2 == 0 ? true : false;
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
+        }
+        //
+        int files = journal.getFiles().size();
+        journal.cleanup();
+        assertTrue(journal.getFiles().size() < files);
+        //
+        Location location = journal.firstLocation();
+        for (int i = iterations / 2; i < iterations; i++) {
+            ByteBuffer buffer = journal.read(location);
+            location = journal.nextLocation(location);
+            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
+        }
+    }
+
     @Test(expected = IOException.class)
     public void testCannotReadDeletedLocation() throws Exception {
         Location location = journal.write(ByteBuffer.wrap("DATA".getBytes("UTF-8")), false);

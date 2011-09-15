@@ -54,7 +54,7 @@ public final class Location implements Comparable<Location> {
     }
 
     boolean isValid() {
-        return dataFileId != NOT_SET && type != Journal.DELETED_RECORD_TYPE;
+        return dataFileId != NOT_SET && type == Journal.USER_RECORD_TYPE;
     }
 
     /**

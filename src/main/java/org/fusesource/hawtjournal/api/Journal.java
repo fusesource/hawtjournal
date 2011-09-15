@@ -18,7 +18,6 @@ package org.fusesource.hawtjournal.api;
 
 import java.util.concurrent.ConcurrentMap;
 import java.util.Set;
-import java.util.Iterator;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
@@ -196,45 +195,18 @@ public class Journal {
         opened = false;
     }
 
-    public synchronized boolean clear() throws IOException {
-        if (opened) {
-            throw new IllegalStateException("Cannot clear open journal!");
+    public synchronized void cleanup() throws IOException {
+        if (!opened) {
+            return;
         }
-
-        // Close all open file handles...
-        appender.close();
-        accessorPool.close();
-
-        boolean result = true;
-        for (Iterator<DataFile> i = fileMap.values().iterator(); i.hasNext();) {
-            DataFile dataFile = i.next();
-            totalLength.addAndGet(-dataFile.getLength());
-            result &= dataFile.delete();
-        }
-        fileMap.clear();
-        fileByFileMap.clear();
-        lastAppendLocation.set(null);
-        dataFiles.clear();
-
-        // reopen open file handles...
-        accessorPool = new DataFileAccessorPool(this);
-        appender = new DataFileAppender(this);
-        return result;
-    }
-
-    public synchronized void removeDataFiles(Set<Integer> files) throws IOException {
-        if (opened) {
-            throw new IllegalStateException("Cannot remove data files from open journal!");
-        }
-
-        for (Integer key : files) {
-            // Can't remove the data file (or subsequent files) that is currently being written to.
-            if (key >= lastAppendLocation.get().getDataFileId()) {
+        for (DataFile file : dataFiles) {
+            // Can't cleanup the data file (or subsequent files) that is currently being written to:
+            if (file.getDataFileId() >= lastAppendLocation.get().getDataFileId()) {
                 continue;
-            }
-            DataFile dataFile = fileMap.get(key);
-            if (dataFile != null) {
-                forceRemoveDataFile(dataFile);
+            } else {
+                if (!hasValidLocations(file)) {
+                    forceRemoveDataFile(file);
+                }
             }
         }
     }
@@ -259,7 +231,7 @@ public class Journal {
             Location candidate = new Location();
             candidate.setDataFileId(head.getDataFileId());
             candidate.setOffset(0);
-            if (!updateLocationDetails(candidate)) {
+            if (!updateLocationDetails(candidate, true)) {
                 return null;
             } else {
                 if (candidate.getType() == USER_RECORD_TYPE) {
@@ -272,7 +244,7 @@ public class Journal {
     }
 
     public Location nextLocation(Location start) throws IOException {
-        if (start.getSize() == -1 && !updateLocationDetails(start)) {
+        if (start.getSize() == -1 && !updateLocationDetails(start, false)) {
             return null;
         } else {
             Location current = start;
@@ -280,7 +252,7 @@ public class Journal {
             while (next == null) {
                 Location candidate = new Location(current);
                 candidate.setOffset(current.getOffset() + current.getSize());
-                if (!updateLocationDetails(candidate)) {
+                if (!updateLocationDetails(candidate, true)) {
                     break;
                 } else {
                     if (candidate.getType() == USER_RECORD_TYPE) {
@@ -463,17 +435,51 @@ public class Journal {
         return nextWriteFile;
     }
 
-    private boolean updateLocationDetails(Location cur) throws IOException {
+    private Location goToFirstLocation(DataFile file) throws IOException, IllegalStateException {
+        Location candidate = new Location();
+        candidate.setDataFileId(file.getDataFileId());
+        candidate.setOffset(0);
+        if (!updateLocationDetails(candidate, false)) {
+            return null;
+        } else {
+            return candidate;
+        }
+    }
+
+    private Location goToNextLocation(Location start, boolean goToNextFile) throws IOException {
+        if (start.getSize() == -1 && !updateLocationDetails(start, false)) {
+            return null;
+        } else {
+            Location current = start;
+            Location next = null;
+            while (next == null) {
+                Location candidate = new Location(current);
+                candidate.setOffset(current.getOffset() + current.getSize());
+                if (!updateLocationDetails(candidate, goToNextFile)) {
+                    break;
+                } else {
+                    next = candidate;
+                }
+            }
+            return next;
+        }
+    }
+
+    private boolean updateLocationDetails(Location cur, boolean goToNextFile) throws IOException {
         DataFile dataFile = getDataFile(cur);
 
-        // Did it go into the next file??
+        // Did it go into the next file and should we go too?
         if (dataFile.getLength() <= cur.getOffset()) {
-            dataFile = getNextDataFile(dataFile);
-            if (dataFile == null) {
-                return false;
+            if (goToNextFile) {
+                dataFile = getNextDataFile(dataFile);
+                if (dataFile == null) {
+                    return false;
+                } else {
+                    cur.setDataFileId(dataFile.getDataFileId().intValue());
+                    cur.setOffset(0);
+                }
             } else {
-                cur.setDataFileId(dataFile.getDataFileId().intValue());
-                cur.setOffset(0);
+                return false;
             }
         }
 
@@ -583,6 +589,16 @@ public class Journal {
 
         dataFile.setLength(location.getOffset());
         return location;
+    }
+
+    private boolean hasValidLocations(DataFile file) throws IOException {
+        Location start = goToFirstLocation(file);
+        Location next = start;
+        boolean hasValidLocations = false | start.isValid();
+        while (!hasValidLocations && (next = goToNextLocation(next, false)) != null) {
+            hasValidLocations |= next.isValid();
+        }
+        return hasValidLocations;
     }
 
 }
