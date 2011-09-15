@@ -97,7 +97,7 @@ public class Journal implements Iterable<Location> {
     private final AtomicReference<Location> lastAppendLocation = new AtomicReference<Location>();
     private Runnable disposeTask;
     private final AtomicLong totalLength = new AtomicLong();
-    private boolean archiveDataLogs;
+    private boolean archiveFiles;
     private boolean checksum;
     private JournalListener listener;
     //
@@ -422,16 +422,16 @@ public class Journal implements Iterable<Location> {
      * Return true if cleaned up log files should be archived, false otherwise.
      * @return
      */
-    public boolean isArchiveDataLogs() {
-        return archiveDataLogs;
+    public boolean isArchiveFiles() {
+        return archiveFiles;
     }
 
     /**
      * Set true if cleaned up log files should be archived, false otherwise.
-     * @param archiveDataLogs
+     * @param archiveFiles
      */
-    public void setArchiveDataLogs(boolean archiveDataLogs) {
-        this.archiveDataLogs = archiveDataLogs;
+    public void setArchiveFiles(boolean archiveFiles) {
+        this.archiveFiles = archiveFiles;
     }
 
     /**
@@ -666,7 +666,7 @@ public class Journal implements Iterable<Location> {
         fileMap.remove(dataFile.getDataFileId());
         totalLength.addAndGet(-dataFile.getLength());
         dataFiles.remove(dataFile);
-        if (archiveDataLogs) {
+        if (archiveFiles) {
             dataFile.move(getDirectoryArchive());
             debug("moved data file %s to %s", dataFile, getDirectoryArchive());
         } else {

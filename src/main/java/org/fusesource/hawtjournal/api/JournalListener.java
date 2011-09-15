@@ -17,7 +17,7 @@
 package org.fusesource.hawtjournal.api;
 
 /**
- * Listener interface, notified at batch syncing.
+ * Listener interface, notified at write syncing.
  *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */

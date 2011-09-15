@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.fusesource.hawtbuf.Buffer;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -151,6 +152,27 @@ public class JournalTest {
 
         };
         journal.setListener(listener);
+        for (int i = 0; i < iterations; i++) {
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
+        }
+        journal.sync();
+        assertTrue(writeLatch.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void testSyncAndCallReplicator() throws Exception {
+        final int iterations = 3;
+        final CountDownLatch writeLatch = new CountDownLatch(1);
+        ReplicationTarget replicator = new ReplicationTarget() {
+
+            public void replicate(Location startLocation, Buffer data, boolean sync) {
+                if (startLocation.getDataFileId() == 1 && startLocation.getOffset() == 0) {
+                    writeLatch.countDown();
+                }
+            }
+
+        };
+        journal.setReplicationTarget(replicator);
         for (int i = 0; i < iterations; i++) {
             journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
         }
