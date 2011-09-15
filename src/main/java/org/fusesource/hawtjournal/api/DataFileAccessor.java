@@ -105,15 +105,25 @@ class DataFileAccessor {
         file.readFully(data);
     }
 
-    synchronized void updateLocationDetails(Location location) throws IOException {
+    synchronized boolean updateLocationDetails(Location location) throws IOException {
         WriteCommand asyncWrite = journal.getInflightWrites().get(location);
         if (asyncWrite != null) {
             location.setSize(asyncWrite.location.getSize());
             location.setType(asyncWrite.location.getType());
+            return true;
         } else {
-            file.seek(location.getOffset());
-            location.setSize(file.readInt());
-            location.setType(file.readByte());
+            if (file.length() > location.getOffset()) {
+                file.seek(location.getOffset());
+                location.setSize(file.readInt());
+                location.setType(file.readByte());
+                if (location.getSize() > 0 && location.getType() != Journal.NO_RECORD_TYPE) {
+                    return true;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
         }
     }
 

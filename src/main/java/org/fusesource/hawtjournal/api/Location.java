@@ -32,10 +32,10 @@ public final class Location implements Comparable<Location> {
     public static final byte NOT_SET_TYPE = 0;
     public static final int NOT_SET = -1;
 
-    private int dataFileId = NOT_SET;
-    private int offset = NOT_SET;
-    private int size = NOT_SET;
-    private byte type = NOT_SET_TYPE;
+    private volatile int dataFileId = NOT_SET;
+    private volatile int offset = NOT_SET;
+    private volatile int size = NOT_SET;
+    private volatile byte type = NOT_SET_TYPE;
     private CountDownLatch latch;
 
     public Location() {
@@ -122,7 +122,7 @@ public final class Location implements Comparable<Location> {
     }
 
     public int compareTo(Location o) {
-        Location l = (Location)o;
+        Location l = o;
         if (dataFileId == l.dataFileId) {
             int rc = offset - l.offset;
             return rc;

@@ -19,10 +19,10 @@ package org.fusesource.hawtjournal.api;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.RandomAccessFile;
-import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -49,7 +49,7 @@ class DataFileAppender {
     private final WriteBatch NULL_BATCH = new WriteBatch();
     //
     private final Journal journal;
-    private final Map<Location, WriteCommand> inflightWrites;
+    private final ConcurrentNavigableMap<Location, WriteCommand> inflightWrites;
     private final BlockingQueue<WriteBatch> batchQueue = new LinkedBlockingQueue<WriteBatch>();
     private final AtomicReference<Exception> firstAsyncException = new AtomicReference<Exception>();
     private final CountDownLatch shutdownDone = new CountDownLatch(1);
@@ -65,7 +65,7 @@ class DataFileAppender {
         public final Queue<WriteCommand> writes = new ConcurrentLinkedQueue<WriteCommand>();
         public final CountDownLatch latch = new CountDownLatch(1);
         public final int offset;
-        public volatile int size = Journal.BATCH_CONTROL_RECORD_SIZE;
+        public volatile int size;
 
         private WriteBatch() {
             this.dataFile = null;
@@ -75,26 +75,40 @@ class DataFileAppender {
         public WriteBatch(DataFile dataFile, int offset, WriteCommand write) throws IOException {
             this.dataFile = dataFile;
             this.offset = offset;
-            this.dataFile.incrementLength(Journal.BATCH_CONTROL_RECORD_SIZE);
             this.size = Journal.BATCH_CONTROL_RECORD_SIZE;
-            journal.addToTotalLength(Journal.BATCH_CONTROL_RECORD_SIZE);
-            append(write);
         }
 
-        public final boolean append(WriteCommand write) throws IOException {
-            int newSize = size + write.location.getSize();
-            if (newSize >= journal.getMaxWriteBatchSize() || offset + newSize > journal.getMaxFileLength()) {
+        public boolean canBatch(WriteCommand write) throws IOException {
+            int thisBatchSize = size + write.location.getSize();
+            int thisFileLength = offset + thisBatchSize;
+            if (thisBatchSize > journal.getMaxWriteBatchSize() || thisFileLength > journal.getMaxFileLength()) {
                 return false;
             } else {
-                writes.offer(write);
-                write.location.setDataFileId(dataFile.getDataFileId());
-                write.location.setOffset(offset + size);
-                int s = write.location.getSize();
-                size += s;
-                dataFile.incrementLength(s);
-                journal.addToTotalLength(s);
                 return true;
             }
+        }
+
+        public void doFirstBatch(WriteCommand controlRecord, WriteCommand writeRecord) throws IOException {
+            controlRecord.location.setType(Journal.BATCH_CONTROL_RECORD_TYPE);
+            controlRecord.location.setSize(Journal.BATCH_CONTROL_RECORD_SIZE);
+            controlRecord.location.setDataFileId(dataFile.getDataFileId());
+            controlRecord.location.setOffset(offset);
+            writeRecord.location.setDataFileId(dataFile.getDataFileId());
+            writeRecord.location.setOffset(offset + Journal.BATCH_CONTROL_RECORD_SIZE);
+            size = Journal.BATCH_CONTROL_RECORD_SIZE + writeRecord.location.getSize();
+            dataFile.incrementLength(size);
+            journal.addToTotalLength(size);
+            writes.offer(controlRecord);
+            writes.offer(writeRecord);
+        }
+
+        public void doAppendBatch(WriteCommand writeRecord) throws IOException {
+            writeRecord.location.setDataFileId(dataFile.getDataFileId());
+            writeRecord.location.setOffset(offset + size);
+            size += writeRecord.location.getSize();
+            dataFile.incrementLength(writeRecord.location.getSize());
+            journal.addToTotalLength(writeRecord.location.getSize());
+            writes.offer(writeRecord);
         }
 
     }
@@ -237,7 +251,7 @@ class DataFileAppender {
         }
     }
 
-    private WriteBatch enqueue(WriteCommand write) throws IOException {
+    private WriteBatch enqueue(WriteCommand writeRecord) throws IOException {
         WriteBatch currentBatch = null;
         int spinnings = 0;
         int limit = 100;
@@ -252,12 +266,18 @@ class DataFileAppender {
                 if (batching.compareAndSet(false, true) && !shutdown) {
                     if (nextWriteBatch == null) {
                         DataFile file = journal.getCurrentWriteFile();
-                        if (file.getLength() > journal.getMaxFileLength()) {
+                        boolean canBatch = false;
+                        currentBatch = new WriteBatch(file, file.getLength(), writeRecord);
+                        canBatch = currentBatch.canBatch(writeRecord);
+                        if (!canBatch) {
                             file = journal.rotateWriteFile();
+                            currentBatch = new WriteBatch(file, file.getLength(), writeRecord);
                         }
-                        currentBatch = new WriteBatch(file, file.getLength(), write);
-                        if (!write.sync) {
-                            inflightWrites.put(write.location, write);
+                        WriteCommand controlRecord = new WriteCommand(new Location(), null, false);
+                        currentBatch.doFirstBatch(controlRecord, writeRecord);
+                        if (!writeRecord.sync) {
+                            inflightWrites.put(controlRecord.location, controlRecord);
+                            inflightWrites.put(writeRecord.location, writeRecord);
                             nextWriteBatch = currentBatch;
                             batching.set(false);
                         } else {
@@ -266,13 +286,15 @@ class DataFileAppender {
                         }
                         break;
                     } else {
-                        boolean batched = nextWriteBatch.append(write);
-                        if (batched && !write.sync) {
-                            inflightWrites.put(write.location, write);
+                        boolean canBatch = nextWriteBatch.canBatch(writeRecord);
+                        if (canBatch && !writeRecord.sync) {
+                            nextWriteBatch.doAppendBatch(writeRecord);
+                            inflightWrites.put(writeRecord.location, writeRecord);
                             currentBatch = nextWriteBatch;
                             batching.set(false);
                             break;
-                        } else if (batched && write.sync) {
+                        } else if (canBatch && writeRecord.sync) {
+                            nextWriteBatch.doAppendBatch(writeRecord);
                             batchQueue.put(nextWriteBatch);
                             currentBatch = nextWriteBatch;
                             nextWriteBatch = null;
@@ -380,8 +402,8 @@ class DataFileAppender {
                         }
                         dataFile = wb.dataFile;
                         file = dataFile.openRandomAccessFile();
-                        if (file.length() < journal.getPreferredFileLength()) {
-                            file.setLength(journal.getPreferredFileLength());
+                        if (file.length() < journal.getMaxFileLength()) {
+                            file.setLength(journal.getMaxFileLength());
                         }
                     }
 
@@ -395,6 +417,7 @@ class DataFileAppender {
 
                     boolean forceToDisk = false;
 
+                    WriteCommand control = wb.writes.poll();
                     WriteCommand first = wb.writes.peek();
                     WriteCommand latest = null;
                     for (WriteCommand current : wb.writes) {
@@ -409,7 +432,7 @@ class DataFileAppender {
 
                     // Now we can fill in the batch control record properly.
                     buff.reset();
-                    buff.skip(5 + Journal.BATCH_CONTROL_RECORD_MAGIC.length);
+                    buff.skip(Journal.HEADER_SIZE + Journal.BATCH_CONTROL_RECORD_MAGIC.length);
                     buff.writeInt(sequence.getLength() - Journal.BATCH_CONTROL_RECORD_SIZE);
                     if (journal.isChecksum()) {
                         Checksum checksum = new Adler32();
@@ -435,10 +458,10 @@ class DataFileAppender {
                     // Now that the data is on disk, remove the writes from the in
                     // flight
                     // cache.
+                    inflightWrites.remove(control.location);
                     for (WriteCommand current : wb.writes) {
                         if (!current.sync) {
-                            WriteCommand was = inflightWrites.remove(current.location);
-                            assert (was != null);
+                            inflightWrites.remove(current.location);
                         }
                     }
 

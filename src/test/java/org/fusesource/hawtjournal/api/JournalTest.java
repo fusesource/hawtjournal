@@ -44,7 +44,11 @@ public class JournalTest {
     @Before
     public void setUp() throws Exception {
         dir = new File("target/tests/JournalTest");
-        dir.mkdirs();
+        if (dir.exists()) {
+            deleteFilesInDirectory(dir);
+        } else {
+            dir.mkdirs();
+        }
         journal = new Journal();
         journal.setDirectory(dir);
         configure(journal);
@@ -62,7 +66,23 @@ public class JournalTest {
     public void testWriteAndReplayLog() throws Exception {
         int iterations = 10;
         for (int i = 0; i < iterations; i++) {
-            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
+            boolean sync = i % 2 == 0 ? true : false;
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
+        }
+        Location location = journal.firstLocation();
+        for (int i = 0; i < iterations; i++) {
+            ByteBuffer buffer = journal.read(location);
+            location = journal.nextLocation(location);
+            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
+        }
+    }
+
+    @Test
+    public void testWriteAndReplayLogSpanningMultipleFiles() throws Exception {
+        int iterations = 1000;
+        for (int i = 0; i < iterations; i++) {
+            boolean sync = i % 2 == 0 ? true : false;
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
         }
         Location location = journal.firstLocation();
         for (int i = 0; i < iterations; i++) {
@@ -81,6 +101,24 @@ public class JournalTest {
         journal.delete(journal.firstLocation());
         Location location = journal.firstLocation();
         for (int i = 1; i < iterations; i++) {
+            ByteBuffer buffer = journal.read(location);
+            location = journal.nextLocation(location);
+            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
+        }
+    }
+
+    @Test
+    public void testWriteRecoveryAndReplayLog() throws Exception {
+        int iterations = 1000;
+        for (int i = 0; i < iterations; i++) {
+            boolean sync = i % 2 == 0 ? true : false;
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
+        }
+        journal.close();
+        //
+        journal.open();
+        Location location = journal.firstLocation();
+        for (int i = 0; i < iterations; i++) {
             ByteBuffer buffer = journal.read(location);
             location = journal.nextLocation(location);
             assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
@@ -194,7 +232,9 @@ public class JournalTest {
         assertEquals(iterations, counter.get());
     }
 
-    protected void configure(Journal dataManager) {
+    protected void configure(Journal journal) {
+        journal.setMaxFileLength(1024);
+        journal.setMaxWriteBatchSize(1024);
     }
 
     private void deleteFilesInDirectory(File directory) {

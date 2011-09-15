@@ -28,6 +28,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -49,6 +51,7 @@ import static org.fusesource.hawtjournal.util.LogHelper.*;
  */
 public class Journal {
 
+    public static final byte NO_RECORD_TYPE = 0;
     public static final byte USER_RECORD_TYPE = 1;
     public static final byte BATCH_CONTROL_RECORD_TYPE = 2;
     public static final byte DELETED_RECORD_TYPE = 3;
@@ -68,15 +71,13 @@ public class Journal {
     public static final String DEFAULT_FILE_SUFFIX = ".log";
     public static final int DEFAULT_MAX_FILE_LENGTH = 1024 * 1024 * 32;
     public static final int DEFAULT_CLEANUP_INTERVAL = 1000 * 30;
-    public static final int PREFERRED_DIFF = 1024 * 512;
+    public static final int MIN_FILE_LENGTH = 1024;
     //
     public static final int DEFAULT_MAX_READERS_PER_FILE = Runtime.getRuntime().availableProcessors();
     //
-    protected static final int DEFAULT_MAX_BATCH_SIZE = 1024 * 1024 * 4;
+    protected static final int DEFAULT_MAX_BATCH_SIZE = DEFAULT_MAX_FILE_LENGTH;
     //
-    private static final int MAX_BATCH_SIZE = 32 * 1024 * 1024;
-    //
-    private final ConcurrentMap<Location, WriteCommand> inflightWrites = new ConcurrentHashMap<Location, WriteCommand>();
+    private final ConcurrentNavigableMap<Location, WriteCommand> inflightWrites = new ConcurrentSkipListMap<Location, WriteCommand>();
     //
     private File directory = new File(DEFAULT_DIRECTORY);
     private File directoryArchive = new File(DEFAULT_ARCHIVE_DIRECTORY);
@@ -85,7 +86,6 @@ public class Journal {
     private boolean opened;
     private int maxReadersPerFile = DEFAULT_MAX_READERS_PER_FILE;
     private int maxFileLength = DEFAULT_MAX_FILE_LENGTH;
-    private int preferredFileLength = DEFAULT_MAX_FILE_LENGTH - PREFERRED_DIFF;
     private DataFileAppender appender;
     private DataFileAccessorPool accessorPool;
     private final ConcurrentMap<Integer, DataFile> fileMap = new ConcurrentHashMap<Integer, DataFile>();
@@ -102,17 +102,23 @@ public class Journal {
     //
     private ReplicationTarget replicationTarget;
     //
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private ScheduledExecutorService scheduler;
 
     public synchronized void open() throws IOException {
         if (opened) {
             return;
         }
 
+        if (maxFileLength < MIN_FILE_LENGTH) {
+            throw new IllegalStateException("Max file length must be equal or greater than: " + MIN_FILE_LENGTH);
+        }
+        if (maxWriteBatchSize > maxFileLength) {
+            throw new IllegalStateException("Max batch size must be equal or less than: " + maxFileLength);
+        }
+
         long start = System.currentTimeMillis();
         accessorPool = new DataFileAccessorPool(this);
         opened = true;
-        preferredFileLength = Math.max(PREFERRED_DIFF, getMaxFileLength() - PREFERRED_DIFF);
 
         appender = new DataFileAppender(this);
         appender.open();
@@ -170,6 +176,7 @@ public class Journal {
             }
 
         };
+        scheduler = Executors.newScheduledThreadPool(1);
         scheduler.scheduleAtFixedRate(cleanupTask, DEFAULT_CLEANUP_INTERVAL, DEFAULT_CLEANUP_INTERVAL, TimeUnit.MILLISECONDS);
         long end = System.currentTimeMillis();
         trace("Startup took: %d ms", (end - start));
@@ -251,8 +258,8 @@ public class Journal {
         } else {
             Location candidate = new Location();
             candidate.setDataFileId(head.getDataFileId());
-            candidate.setOffset(Journal.BATCH_CONTROL_RECORD_SIZE);
-            if (!verifyLocationDetails(candidate)) {
+            candidate.setOffset(0);
+            if (!updateLocationDetails(candidate)) {
                 return null;
             } else {
                 if (candidate.getType() == USER_RECORD_TYPE) {
@@ -265,7 +272,7 @@ public class Journal {
     }
 
     public Location nextLocation(Location start) throws IOException {
-        if (start.getSize() == -1 && !verifyLocationDetails(start)) {
+        if (start.getSize() == -1 && !updateLocationDetails(start)) {
             return null;
         } else {
             Location current = start;
@@ -273,7 +280,7 @@ public class Journal {
             while (next == null) {
                 Location candidate = new Location(current);
                 candidate.setOffset(current.getOffset() + current.getSize());
-                if (!verifyLocationDetails(candidate)) {
+                if (!updateLocationDetails(candidate)) {
                     break;
                 } else {
                     if (candidate.getType() == USER_RECORD_TYPE) {
@@ -336,10 +343,6 @@ public class Journal {
         this.filePrefix = filePrefix;
     }
 
-    public ConcurrentMap<Location, WriteCommand> getInflightWrites() {
-        return inflightWrites;
-    }
-
     public Location getLastAppendLocation() {
         return lastAppendLocation.get();
     }
@@ -373,22 +376,6 @@ public class Journal {
 
     public Set<File> getFiles() {
         return fileByFileMap.keySet();
-    }
-
-    public long getDiskSize() {
-        long tailLength = 0;
-        if (!dataFiles.isEmpty()) {
-            tailLength = dataFiles.get(dataFiles.size() - 1).getLength();
-        }
-
-        long rc = totalLength.get();
-
-        // The last file is actually at a minimum preferedFileLength big.
-        if (tailLength < preferredFileLength) {
-            rc -= tailLength;
-            rc += preferredFileLength;
-        }
-        return rc;
     }
 
     public void setReplicationTarget(ReplicationTarget replicationTarget) {
@@ -431,16 +418,16 @@ public class Journal {
         this.listener = listener;
     }
 
-    public int getPreferredFileLength() {
-        return preferredFileLength;
-    }
-
     public int getMaxReadersPerFile() {
         return maxReadersPerFile;
     }
 
     public void setMaxReadersPerFile(int maxReadersPerFile) {
         this.maxReadersPerFile = maxReadersPerFile;
+    }
+
+    ConcurrentNavigableMap<Location, WriteCommand> getInflightWrites() {
+        return inflightWrites;
     }
 
     void addToTotalLength(int size) {
@@ -476,7 +463,7 @@ public class Journal {
         return nextWriteFile;
     }
 
-    private boolean verifyLocationDetails(Location cur) throws IOException {
+    private boolean updateLocationDetails(Location cur) throws IOException {
         DataFile dataFile = getDataFile(cur);
 
         // Did it go into the next file??
@@ -493,11 +480,10 @@ public class Journal {
         // Load in location size and type.
         DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
         try {
-            reader.updateLocationDetails(cur);
+            return reader.updateLocationDetails(cur);
         } finally {
             accessorPool.closeDataFileAccessor(reader);
         }
-        return true;
     }
 
     private File getFile(int nextNum) {
@@ -566,7 +552,7 @@ public class Journal {
                 }
 
                 int size = controlIs.readInt();
-                if (size > MAX_BATCH_SIZE) {
+                if (size > maxWriteBatchSize) {
                     break;
                 }
 
