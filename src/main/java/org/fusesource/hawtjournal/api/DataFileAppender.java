@@ -116,7 +116,6 @@ class DataFileAppender {
     public static class WriteCommand implements JournalListener.Write {
 
         public final Location location;
-        public final Object attachment;
         public final boolean sync;
         public volatile Buffer data;
 
@@ -124,24 +123,11 @@ class DataFileAppender {
             this.location = location;
             this.data = data;
             this.sync = sync;
-            this.attachment = null;
-        }
-
-        public WriteCommand(Location location, Buffer data, Object attachment) {
-            this.location = location;
-            this.data = data;
-            this.attachment = attachment;
-            this.sync = false;
         }
 
         public Location getLocation() {
             return location;
         }
-
-        public Object getAttachment() {
-            return attachment;
-        }
-
     }
 
     public class WriteFuture implements Future<Boolean> {
@@ -201,21 +187,6 @@ class DataFileAppender {
             }
         }
 
-        return location;
-    }
-
-    Location storeItem(Buffer data, byte type, Object attachment) throws IOException {
-        // Write the packet into our internal buffer.
-        int size = Journal.HEADER_SIZE + data.getLength();
-
-        Location location = new Location();
-        location.setSize(size);
-        location.setType(type);
-
-        WriteCommand write = new WriteCommand(location, data, attachment);
-        WriteBatch batch = enqueue(write);
-
-        location.setLatch(batch.latch);
         return location;
     }
 
@@ -418,7 +389,7 @@ class DataFileAppender {
                     WriteCommand first = wb.writes.peek();
                     WriteCommand latest = null;
                     for (WriteCommand current : wb.writes) {
-                        forceToDisk |= current.sync | current.attachment != null;
+                        forceToDisk |= current.sync;
                         buff.writeInt(current.location.getSize());
                         buff.writeByte(current.location.getType());
                         buff.write(current.data.getData(), current.data.getOffset(), current.data.getLength());

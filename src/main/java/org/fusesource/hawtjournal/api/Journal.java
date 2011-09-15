@@ -266,21 +266,6 @@ public class Journal implements Iterable<Location> {
     }
 
     /**
-     * Write the given byte buffer record, carrying the given (non-persistent) attached object, and returns the stored {@link Location}.<br/>
-     * This write call is always async.
-     *
-     * @param data
-     * @param attachment
-     * @return
-     * @throws IOException
-     * @throws IllegalStateException
-     */
-    public Location write(ByteBuffer data, Object attachment) throws IOException, IllegalStateException {
-        Location loc = appender.storeItem(new Buffer(data), Journal.USER_RECORD_TYPE, attachment);
-        return loc;
-    }
-
-    /**
      * Delete the record at the given {@link Location}.<br/>
      * Deletes cause first a batch sync and always are logical: records will be actually deleted at log cleanup time.
      * @param location

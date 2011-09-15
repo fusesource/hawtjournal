@@ -26,8 +26,6 @@ public interface JournalListener {
     public interface Write {
 
         Location getLocation();
-
-        Object getAttachment();
     }
 
     public void synced(Write[] writes);
