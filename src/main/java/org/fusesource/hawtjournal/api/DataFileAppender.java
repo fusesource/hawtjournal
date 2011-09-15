@@ -443,7 +443,7 @@ class DataFileAppender {
 
                     ReplicationTarget replicationTarget = journal.getReplicationTarget();
                     if (replicationTarget != null) {
-                        replicationTarget.replicate(first.location, sequence, forceToDisk);
+                        replicationTarget.replicate(control.location, sequence, forceToDisk);
                     }
 
                     if (forceToDisk) {

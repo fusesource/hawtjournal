@@ -23,6 +23,5 @@ import org.fusesource.hawtbuf.Buffer;
  */
 public interface ReplicationTarget {
 
-	void replicate(Location location, Buffer sequence, boolean sync);
-
+    void replicate(Location location, Buffer sequence, boolean sync);
 }
