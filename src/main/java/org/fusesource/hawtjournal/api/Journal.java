@@ -70,7 +70,7 @@ public class Journal implements Iterable<Location> {
     public static final String DEFAULT_FILE_PREFIX = "db-";
     public static final String DEFAULT_FILE_SUFFIX = ".log";
     public static final int DEFAULT_MAX_FILE_LENGTH = 1024 * 1024 * 32;
-    public static final int DEFAULT_CLEANUP_INTERVAL = 1000 * 30;
+    public static final int DEFAULT_DISPOSE_INTERVAL = 1000 * 30;
     public static final int MIN_FILE_LENGTH = 1024;
     //
     public static final int DEFAULT_MAX_READERS_PER_FILE = Runtime.getRuntime().availableProcessors();
@@ -92,7 +92,7 @@ public class Journal implements Iterable<Location> {
     private final ConcurrentMap<File, DataFile> fileByFileMap = new ConcurrentHashMap<File, DataFile>();
     private final CopyOnWriteArrayList<DataFile> dataFiles = new CopyOnWriteArrayList<DataFile>();
     private final AtomicReference<Location> lastAppendLocation = new AtomicReference<Location>();
-    private Runnable cleanupTask;
+    private Runnable disposeTask;
     private final AtomicLong totalLength = new AtomicLong();
     private boolean archiveDataLogs;
     private boolean checksum;
@@ -167,7 +167,7 @@ public class Journal implements Iterable<Location> {
             warn(e, "recovery check failed");
         }
 
-        cleanupTask = new Runnable() {
+        disposeTask = new Runnable() {
 
             public void run() {
                 if (accessorPool != null) {
@@ -177,7 +177,7 @@ public class Journal implements Iterable<Location> {
 
         };
         scheduler = Executors.newScheduledThreadPool(1);
-        scheduler.scheduleAtFixedRate(cleanupTask, DEFAULT_CLEANUP_INTERVAL, DEFAULT_CLEANUP_INTERVAL, TimeUnit.MILLISECONDS);
+        scheduler.scheduleAtFixedRate(disposeTask, DEFAULT_DISPOSE_INTERVAL, DEFAULT_DISPOSE_INTERVAL, TimeUnit.MILLISECONDS);
         long end = System.currentTimeMillis();
         trace("Startup took: %d ms", (end - start));
     }
