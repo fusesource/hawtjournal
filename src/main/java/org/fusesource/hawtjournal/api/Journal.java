@@ -16,6 +16,7 @@
  */
 package org.fusesource.hawtjournal.api;
 
+import java.util.Iterator;
 import java.util.concurrent.ConcurrentMap;
 import java.util.Set;
 import java.io.File;
@@ -48,7 +49,7 @@ import static org.fusesource.hawtjournal.util.LogHelper.*;
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  * @author Sergio Bossa
  */
-public class Journal {
+public class Journal implements Iterable<Location> {
 
     public static final byte NO_RECORD_TYPE = 0;
     public static final byte USER_RECORD_TYPE = 1;
@@ -223,50 +224,6 @@ public class Journal {
         return directory.toString();
     }
 
-    public Location firstLocation() throws IOException, IllegalStateException {
-        DataFile head = dataFiles.get(0);
-        if (head == null) {
-            return null;
-        } else {
-            Location candidate = new Location();
-            candidate.setDataFileId(head.getDataFileId());
-            candidate.setOffset(0);
-            if (!updateLocationDetails(candidate, true)) {
-                return null;
-            } else {
-                if (candidate.getType() == USER_RECORD_TYPE) {
-                    return candidate;
-                } else {
-                    return nextLocation(candidate);
-                }
-            }
-        }
-    }
-
-    public Location nextLocation(Location start) throws IOException {
-        if (start.getSize() == -1 && !updateLocationDetails(start, false)) {
-            return null;
-        } else {
-            Location current = start;
-            Location next = null;
-            while (next == null) {
-                Location candidate = new Location(current);
-                candidate.setOffset(current.getOffset() + current.getSize());
-                if (!updateLocationDetails(candidate, true)) {
-                    break;
-                } else {
-                    if (candidate.getType() == USER_RECORD_TYPE) {
-                        next = candidate;
-                    } else {
-                        current = candidate;
-                        continue;
-                    }
-                }
-            }
-            return next;
-        }
-    }
-
     public ByteBuffer read(Location location) throws IOException, IllegalStateException {
         DataFile dataFile = getDataFile(location);
         DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
@@ -297,6 +254,52 @@ public class Journal {
         } finally {
             accessorPool.closeDataFileAccessor(reader);
         }
+    }
+
+    public Iterator<Location> iterator() {
+        return new Iterator<Location>() {
+
+            private Location next = init();
+
+            public boolean hasNext() {
+                return next != null;
+            }
+
+            public Location next() {
+                if (next != null) {
+                    try {
+                        Location current = next;
+                        next = goToNextLocation(current, true, true);
+                        return current;
+                    } catch (IOException ex) {
+                        throw new IllegalStateException(ex.getMessage(), ex);
+                    }
+                } else {
+                    throw new IllegalStateException("No next location!");
+                }
+            }
+
+            public void remove() {
+                if (next != null) {
+                    try {
+                        delete(next);
+                    } catch (IOException ex) {
+                        throw new IllegalStateException(ex.getMessage(), ex);
+                    }
+                } else {
+                    throw new IllegalStateException("No location to remove!");
+                }
+            }
+
+            private Location init() {
+                try {
+                    return goToFirstLocation(dataFiles.get(0), true, true);
+                } catch (IOException ex) {
+                    throw new IllegalStateException(ex.getMessage(), ex);
+                }
+            }
+
+        };
     }
 
     public File getDirectory() {
@@ -435,18 +438,22 @@ public class Journal {
         return nextWriteFile;
     }
 
-    private Location goToFirstLocation(DataFile file) throws IOException, IllegalStateException {
+    private Location goToFirstLocation(DataFile file, boolean mustBeValid, boolean goToNextFile) throws IOException, IllegalStateException {
         Location candidate = new Location();
         candidate.setDataFileId(file.getDataFileId());
         candidate.setOffset(0);
         if (!updateLocationDetails(candidate, false)) {
             return null;
         } else {
-            return candidate;
+            if (!mustBeValid || (mustBeValid && candidate.isValid())) {
+                return candidate;
+            } else {
+                return goToNextLocation(candidate, mustBeValid, goToNextFile);
+            }
         }
     }
 
-    private Location goToNextLocation(Location start, boolean goToNextFile) throws IOException {
+    private Location goToNextLocation(Location start, boolean mustBeValid, boolean goToNextFile) throws IOException {
         if (start.getSize() == -1 && !updateLocationDetails(start, false)) {
             return null;
         } else {
@@ -458,7 +465,11 @@ public class Journal {
                 if (!updateLocationDetails(candidate, goToNextFile)) {
                     break;
                 } else {
-                    next = candidate;
+                    if (!mustBeValid || (mustBeValid && candidate.isValid())) {
+                        next = candidate;
+                    } else {
+                        current = candidate;
+                    }
                 }
             }
             return next;
@@ -592,10 +603,10 @@ public class Journal {
     }
 
     private boolean hasValidLocations(DataFile file) throws IOException {
-        Location start = goToFirstLocation(file);
+        Location start = goToFirstLocation(file, false, false);
         Location next = start;
         boolean hasValidLocations = false | start.isValid();
-        while (!hasValidLocations && (next = goToNextLocation(next, false)) != null) {
+        while (!hasValidLocations && (next = goToNextLocation(next, false, false)) != null) {
             hasValidLocations |= next.isValid();
         }
         return hasValidLocations;

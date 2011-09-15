@@ -21,8 +21,6 @@ import java.util.concurrent.TimeUnit;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -61,55 +59,24 @@ public class JournalTest {
         deleteFilesInDirectory(dir);
         dir.delete();
     }
-
+    
     @Test
-    public void testWriteAndReplayLog() throws Exception {
+    public void testLogWritingAndReplaying() throws Exception {
         int iterations = 10;
         for (int i = 0; i < iterations; i++) {
             boolean sync = i % 2 == 0 ? true : false;
             journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
         }
-        Location location = journal.firstLocation();
-        for (int i = 0; i < iterations; i++) {
+        int i = 0;
+        for (Location location : journal) {
             ByteBuffer buffer = journal.read(location);
-            location = journal.nextLocation(location);
-            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
+            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
         }
     }
 
     @Test
-    public void testWriteAndReplayLogSpanningMultipleFiles() throws Exception {
-        int iterations = 1000;
-        for (int i = 0; i < iterations; i++) {
-            boolean sync = i % 2 == 0 ? true : false;
-            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
-        }
-        Location location = journal.firstLocation();
-        for (int i = 0; i < iterations; i++) {
-            ByteBuffer buffer = journal.read(location);
-            location = journal.nextLocation(location);
-            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
-        }
-    }
-
-    @Test
-    public void testWriteAndReplayLogWithDeletes() throws Exception {
+    public void testLogRecovery() throws Exception {
         int iterations = 10;
-        for (int i = 0; i < iterations; i++) {
-            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
-        }
-        journal.delete(journal.firstLocation());
-        Location location = journal.firstLocation();
-        for (int i = 1; i < iterations; i++) {
-            ByteBuffer buffer = journal.read(location);
-            location = journal.nextLocation(location);
-            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
-        }
-    }
-
-    @Test
-    public void testWriteRecoveryAndReplayLog() throws Exception {
-        int iterations = 1000;
         for (int i = 0; i < iterations; i++) {
             boolean sync = i % 2 == 0 ? true : false;
             journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
@@ -117,16 +84,29 @@ public class JournalTest {
         journal.close();
         //
         journal.open();
-        Location location = journal.firstLocation();
-        for (int i = 0; i < iterations; i++) {
+        int i = 0;
+        for (Location location : journal) {
             ByteBuffer buffer = journal.read(location);
-            location = journal.nextLocation(location);
-            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
+            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
         }
     }
 
     @Test
-    public void testWriteCleanupAndReplayLog() throws Exception {
+    public void testLogSpanningMultipleFiles() throws Exception {
+        int iterations = 1000;
+        for (int i = 0; i < iterations; i++) {
+            boolean sync = i % 2 == 0 ? true : false;
+            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
+        }
+        int i = 0;
+        for (Location location : journal) {
+            ByteBuffer buffer = journal.read(location);
+            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
+        }
+    }
+
+    @Test
+    public void testLogDeleteAndCleanup() throws Exception {
         int iterations = 1000;
         for (int i = 0; i < iterations / 2; i++) {
             boolean sync = i % 2 == 0 ? true : false;
@@ -138,15 +118,14 @@ public class JournalTest {
             journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
         }
         //
-        int files = journal.getFiles().size();
+        int preCleanupFiles = journal.getFiles().size();
         journal.cleanup();
-        assertTrue(journal.getFiles().size() < files);
+        assertTrue(journal.getFiles().size() < preCleanupFiles);
         //
-        Location location = journal.firstLocation();
-        for (int i = iterations / 2; i < iterations; i++) {
+        int i = iterations / 2;
+        for (Location location : journal) {
             ByteBuffer buffer = journal.read(location);
-            location = journal.nextLocation(location);
-            assertEquals("DATA" + i, new String(buffer.array(), "UTF-8"));
+            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
         }
     }
 
@@ -159,35 +138,7 @@ public class JournalTest {
     }
 
     @Test
-    public void testSyncWriteAndRead() throws Exception {
-        int iterations = 10;
-        List<Location> locations = new ArrayList<Location>(iterations);
-        for (int i = 0; i < iterations; i++) {
-            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), true);
-        }
-        int i = 0;
-        for (Location location : locations) {
-            ByteBuffer buffer = journal.read(location);
-            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
-        }
-    }
-
-    @Test
-    public void testAsyncWriteAndRead() throws Exception {
-        int iterations = 10;
-        List<Location> locations = new ArrayList<Location>(iterations);
-        for (int i = 0; i < iterations; i++) {
-            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
-        }
-        int i = 0;
-        for (Location location : locations) {
-            ByteBuffer buffer = journal.read(location);
-            assertEquals("DATA" + i++, new String(buffer.array(), "UTF-8"));
-        }
-    }
-
-    @Test
-    public void testAsyncWriteAndReadWithListener() throws Exception {
+    public void testSyncAndCallListener() throws Exception {
         final int iterations = 10;
         final CountDownLatch writeLatch = new CountDownLatch(iterations);
         JournalListener listener = new JournalListener() {
@@ -203,12 +154,12 @@ public class JournalTest {
         for (int i = 0; i < iterations; i++) {
             journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), false);
         }
-        journal.close();
+        journal.sync();
         assertTrue(writeLatch.await(5, TimeUnit.SECONDS));
     }
 
     @Test
-    public void testBatchWriteCompleteAfterClose() throws Exception {
+    public void testBatchWriteCompletesAfterClose() throws Exception {
         ByteBuffer data = ByteBuffer.wrap("DATA".getBytes());
         final int iterations = 10;
         for (int i = 0; i < iterations; i++) {
