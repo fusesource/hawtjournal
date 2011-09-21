@@ -1,4 +1,4 @@
-# HawtJournal
+# ![HawtJournal](https://github.com/fusesource/hawtjournal/raw/master/src/site/resources/images/project-logo.png)
 
 ## Synopsis 
 
