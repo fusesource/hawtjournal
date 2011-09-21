@@ -1,4 +1,4 @@
-# HawtJournal
+# ![HawtJournal](https://github.com/fusesource/hawtjournal/raw/master/src/site/resources/images/project-logo.png)
 
 HawtJournal is a journal storage implementation based on append-only rotating logs and checksummed variable-length records, 
 with fixed concurrent reads, full concurrent writes, dynamic batching and "dead" logs cleanup.
