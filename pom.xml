@@ -20,7 +20,7 @@
   <parent>
     <groupId>org.fusesource</groupId>
     <artifactId>fusesource-pom</artifactId>
-    <version>1.0</version>
+    <version>1.8</version>
   </parent>
 
   <modelVersion>4.0.0</modelVersion>
@@ -38,7 +38,6 @@
   <properties>
     <forge-project-id>hawtjournal</forge-project-id>
     <forge-project-id-uc>HawtJournal</forge-project-id-uc>
-    <release-altGitURL>scm:git:git@github.com:fusesource/hawtjournal.git</release-altGitURL>
 
     <hawtbuf-version>1.4</hawtbuf-version>
     <commons-logging-version>1.1</commons-logging-version>
@@ -47,11 +46,11 @@
   </properties>
 
   <url>http://${forge-project-id}.fusesource.org/</url>
-  <inceptionYear>2009</inceptionYear>
+  <inceptionYear>2011</inceptionYear>
 
   <issueManagement>
-    <system>assembla</system>
-    <url>http://www.assembla.com/spaces/hawtjournal/support/tickets</url>
+    <system>github</system>
+    <url>https://github.com/fusesource/hawtjournal/issues</url>
   </issueManagement>
     
   <licenses>
@@ -64,8 +63,7 @@
   
   <scm>
     <connection>scm:git:git://forge.fusesource.com/${forge-project-id}.git</connection>
-    <!-- Work around for issue: http://jira.codehaus.org/browse/SCM-444 -->
-    <developerConnection>${release-altGitURL}</developerConnection>
+    <developerConnection>scm:git:git@github.com:fusesource/hawtjournal.git</developerConnection>
     <url>http://github.com/chirino/hawtjournal/tree/master</url>
   </scm>
 
@@ -73,7 +71,7 @@
     <site>
       <id>website.fusesource.org</id>
       <name>website</name>
-      <url>dav:http://fusesource.com/forge/dav/${forge-project-id}/maven/${project.version}</url>
+      <url>dav:http://fusesource.com/forge/dav/${forge-project-id}/versions/${project.version}/maven</url>
     </site>
   </distributionManagement> 
 
@@ -153,7 +151,91 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-site-plugin</artifactId>
-        <version>2.1.1</version>
+        <version>3.0</version>
+        <executions>
+         <execution>
+           <id>attach-descriptor</id>
+           <goals>
+             <goal>attach-descriptor</goal>
+           </goals>
+         </execution>
+       </executions>
+       <configuration>
+          <reportPlugins>
+            
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-project-info-reports-plugin</artifactId>
+              <version>2.4</version>
+              <configuration>
+                <dependencyDetailsEnabled>false</dependencyDetailsEnabled>
+                <dependencyLocationsEnabled>false</dependencyLocationsEnabled>
+              </configuration>
+              <!-- simpler configuration without reportSets available for usual cases -->
+              <reports>
+                <report>index</report>
+                <report>dependencies</report>
+                <report>issue-tracking</report>
+                <report>license</report>
+                <report>mailing-list</report>
+                <report>modules</report>
+                <report>project-team</report>
+                <report>plugin-management</report>
+                <report>plugins</report>
+                <report>scm</report>
+              </reports>
+            </plugin>
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-javadoc-plugin</artifactId>
+              <version>2.7</version>
+              <configuration>
+                <charset>UTF-8</charset>
+                <docencoding>UTF-8</docencoding>
+                <version>false</version>
+                <author>true</author>
+                <keywords>true</keywords>
+          
+                <stylesheetfile>${project.build.directory}/javadoc-skin/stylesheet.css</stylesheetfile>
+                <!-- 
+                <resourcesArtifacts>
+                  <resourcesArtifact>
+                    <groupId>org.fusesource.mvnplugins</groupId>
+                    <artifactId>fuse-javadoc-skin</artifactId>
+                    <version>1.9</version>
+                  </resourcesArtifact>
+                </resourcesArtifacts>
+                -->
+          
+                <doctitle>${project.name} API Reference (${project.version})</doctitle>
+                <windowtitle>${project.name} API Reference (${project.version})</windowtitle>
+                <links>
+                  <link>http://java.sun.com/j2se/1.5.0/docs/api</link>
+                </links>
+                <encoding>UTF-8</encoding>
+                <locale>en_US</locale>
+                <linksource>true</linksource>
+                <excludePackageNames>*.internal</excludePackageNames>
+              </configuration>
+
+            </plugin> 
+                       
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-jxr-plugin</artifactId>
+              <version>2.3</version>
+              <configuration>
+                <stylesheet>fuse-jxr-skin-stylesheet.css</stylesheet>
+                <inputEncoding>UTF-8</inputEncoding>
+                <outputEncoding>UTF-8</outputEncoding>
+                <linkJavadoc>true</linkJavadoc>
+                <docTitle>${project.name} Source Xref (${project.version})</docTitle>
+                <windowTitle>${project.name} Source Xref (${project.version})</windowTitle>
+              </configuration>
+            </plugin>
+            
+          </reportPlugins>
+        </configuration>
       </plugin>
 
       <plugin>
@@ -188,27 +270,35 @@
 
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-site-plugin</artifactId>
-        <version>2.1.1</version>
-        <dependencies>
-          <dependency>
-          <groupId>org.apache.maven.wagon</groupId>
-          <artifactId>wagon-webdav-jackrabbit</artifactId>
-          <version>1.0-beta-6</version>
-          <exclusions>
-            <exclusion>
-              <groupId>commons-logging</groupId>
-              <artifactId>commons-logging</artifactId>
-            </exclusion>
-          </exclusions>
-         </dependency>
-        </dependencies>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>2.3</version>
+        <executions>
+          <execution>
+            <id>unpack</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>unpack</goal>
+            </goals>
+            <configuration>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>org.fusesource.mvnplugins</groupId>
+                  <artifactId>fuse-javadoc-skin</artifactId>
+                  <version>1.9</version>
+                  <type>jar</type>
+                  <overWrite>false</overWrite>
+                  <outputDirectory>${project.build.directory}/javadoc-skin</outputDirectory>
+                </artifactItem>
+              </artifactItems>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
 
     </plugins>
   </build>
   
-  <reporting>
+  <!-- <reporting>
     <plugins>
 
       <plugin>
@@ -237,59 +327,19 @@
         <version>2.4.3</version>
       </plugin>
       
+      
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
         <version>2.7</version>
         <configuration>
-        
-          <docfilessubdirs>true</docfilessubdirs>
-          <useStandardDocletOptions>true</useStandardDocletOptions>
-          <charset>UTF-8</charset>
-          <docencoding>UTF-8</docencoding>
-          <breakiterator>true</breakiterator>
-          <version>true</version>
-          <author>true</author>
-          <keywords>true</keywords>
-          
-          <!-- <stylesheetfile>${basedir}/target/site/apidocs/stylesheet.css</stylesheetfile>
-          <resourcesArtifacts>
-            <resourcesArtifact>
-              <groupId>org.fusesource.mvnplugins</groupId>
-              <artifactId>fuse-javadoc-skin</artifactId>
-              <version>1.9</version>
-            </resourcesArtifact>
-          </resourcesArtifacts> -->
-          
-          <doctitle>${project.name} API Reference (${project.version})</doctitle>
-          <windowtitle>${project.name} API Reference (${project.version})</windowtitle>
-          <links>
-            <link>http://java.sun.com/j2se/1.5.0/docs/api</link>
-          </links>
-          <encoding>UTF-8</encoding>
-          <locale>en_US</locale>
-          <linksource>true</linksource>
-          <excludePackageNames>*.internal</excludePackageNames>
         </configuration>
       </plugin>
       
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-jxr-plugin</artifactId>
-        <version>2.2</version>
-        <configuration>
-          <stylesheet>fuse-jxr-skin-stylesheet.css</stylesheet>
-          <inputEncoding>UTF-8</inputEncoding>
-          <outputEncoding>UTF-8</outputEncoding>
-          <linkJavadoc>true</linkJavadoc>
-          <docTitle>${project.name} Source Xref (${project.version})</docTitle>
-          <windowTitle>${project.name} Source Xref (${project.version})</windowTitle>
-        </configuration>
-      </plugin>
             
     </plugins>
   </reporting>
-  
+   -->
 
   <profiles>
 
