@@ -73,10 +73,6 @@ class DataFile implements Comparable<DataFile> {
         return new RandomAccessFile(file, "rw");
     }
 
-    synchronized void closeRandomAccessFile(RandomAccessFile file) throws IOException {
-        file.close();
-    }
-
     synchronized boolean delete() throws IOException {
         return file.delete();
     }

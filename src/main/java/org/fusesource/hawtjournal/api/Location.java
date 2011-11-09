@@ -29,13 +29,17 @@ import java.util.concurrent.CountDownLatch;
  */
 public final class Location implements Comparable<Location> {
 
-    static final byte NOT_SET_TYPE = 0;
+    static final byte NO_RECORD_TYPE = 0;
+    static final byte USER_RECORD_TYPE = 1;
+    static final byte BATCH_CONTROL_RECORD_TYPE = 2;
+    static final byte DELETED_RECORD_TYPE = 3;
+    //
     static final int NOT_SET = -1;
     //
     private volatile int dataFileId = NOT_SET;
     private volatile int offset = NOT_SET;
     private volatile int size = NOT_SET;
-    private volatile byte type = NOT_SET_TYPE;
+    private volatile byte type = NO_RECORD_TYPE;
     private CountDownLatch latch;
 
     public Location() {
@@ -52,36 +56,44 @@ public final class Location implements Comparable<Location> {
         this.dataFileId=dataFileId;
         this.offset=offset;
     }
+    
+    public boolean isBatchControlRecord() {
+        return dataFileId != NOT_SET && type == Location.BATCH_CONTROL_RECORD_TYPE;
+    }
+    
+    public boolean isDeletedRecord() {
+        return dataFileId != NOT_SET && type == Location.DELETED_RECORD_TYPE;
+    }
 
-    boolean isValid() {
-        return dataFileId != NOT_SET && type == Journal.USER_RECORD_TYPE;
+    public boolean isUserRecord() {
+        return dataFileId != NOT_SET && type == Location.USER_RECORD_TYPE;
     }
 
     public int getSize() {
         return size;
     }
+    
+    public int getOffset() {
+        return offset;
+    }
+    
+    public int getDataFileId() {
+        return dataFileId;
+    }
 
     void setSize(int size) {
         this.size = size;
     }
-
-    public int getOffset() {
-        return offset;
-    }
-
+    
     void setOffset(int offset) {
         this.offset = offset;
-    }
-
-    public int getDataFileId() {
-        return dataFileId;
     }
 
     void setDataFileId(int file) {
         this.dataFileId = file;
     }
 
-    public byte getType() {
+    byte getType() {
         return type;
     }
 

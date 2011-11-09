@@ -60,7 +60,7 @@ public class JournalTest {
         deleteFilesInDirectory(dir);
         dir.delete();
     }
-    
+
     @Test
     public void testLogWritingAndReplaying() throws Exception {
         int iterations = 10;
@@ -188,7 +188,7 @@ public class JournalTest {
             journal.write(data, false);
         }
         journal.close();
-        assertTrue("queued data is written:" + journal.getInflightWrites().size(), journal.getInflightWrites().isEmpty());
+        assertTrue(journal.getInflightWrites().isEmpty());
     }
 
     @Test
@@ -197,7 +197,7 @@ public class JournalTest {
         final int iterations = 10;
         for (int i = 0; i < iterations; i++) {
             journal.write(data, true);
-            assertTrue("queued data is written", journal.getInflightWrites().isEmpty());
+            assertTrue(journal.getInflightWrites().isEmpty());
         }
     }
 
@@ -214,9 +214,14 @@ public class JournalTest {
                 public void run() {
                     try {
                         boolean sync = index % 2 == 0 ? true : false;
-                        Location location = journal.write(ByteBuffer.wrap(new String("DATA" + index).getBytes("UTF-8")), sync);
-                        if (new String(journal.read(location).array(), "UTF-8").equals("DATA" + index)) {
+                        String write = new String("DATA" + index);
+                        Location location = journal.write(ByteBuffer.wrap(write.getBytes("UTF-8")), sync);
+                        String read = new String(journal.read(location).array(), "UTF-8");
+                        if (read.equals("DATA" + index)) {
                             counter.incrementAndGet();
+                        } else {
+                            System.out.println(write);
+                            System.out.println(read);
                         }
                     } catch (Exception ex) {
                         ex.printStackTrace();
