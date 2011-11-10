@@ -16,13 +16,23 @@
  */
 package org.fusesource.hawtjournal.api;
 
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.Iterator;
 import java.util.Set;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -31,11 +41,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.Adler32;
 import java.util.zip.Checksum;
 import org.fusesource.hawtbuf.Buffer;
-import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
+import org.fusesource.hawtbuf.DataByteArrayOutputStream;
+import org.fusesource.hawtjournal.util.IOHelper;
 import static org.fusesource.hawtjournal.util.LogHelper.*;
 
 /**
- * Journal implementation based on append-only rotating logs and checksummed records, with fully concurrent writes and random reads, 
+ * Journal implementation based on append-only rotating logs and checksummed records, with fully concurrent writes and reads, 
  * dynamic batching and "dead" logs cleanup.<br/>
  * Journal records can be written, read and deleted by providing a {@link Location} object.<br/>
  * The whole journal can be replayed by simply iterating through it in a foreach block.<br/>
@@ -634,4 +645,187 @@ public class Journal implements Iterable<Location> {
         return start != null && start.isUserRecord();
     }
 
+    static class WriteBatch {
+
+        private final DataFile dataFile;
+        private final Queue<WriteCommand> writes = new ConcurrentLinkedQueue<WriteCommand>();
+        private final CountDownLatch latch = new CountDownLatch(1);
+        private final int offset;
+        private volatile int size;
+
+        WriteBatch() {
+            this.dataFile = null;
+            this.offset = -1;
+        }
+
+        WriteBatch(DataFile dataFile, int offset, WriteCommand write) throws IOException {
+            this.dataFile = dataFile;
+            this.offset = offset;
+            this.size = BATCH_CONTROL_RECORD_SIZE;
+        }
+
+        boolean canBatch(WriteCommand write, int maxWriteBatchSize, int maxFileLength) throws IOException {
+            int thisBatchSize = size + write.location.getSize();
+            int thisFileLength = offset + thisBatchSize;
+            if (thisBatchSize > maxWriteBatchSize || thisFileLength > maxFileLength) {
+                return false;
+            } else {
+                return true;
+            }
+        }
+
+        void doFirstBatch(WriteCommand controlRecord, WriteCommand writeRecord) throws IOException {
+            controlRecord.location.setType(Location.BATCH_CONTROL_RECORD_TYPE);
+            controlRecord.location.setSize(Journal.BATCH_CONTROL_RECORD_SIZE);
+            controlRecord.location.setDataFileId(dataFile.getDataFileId());
+            controlRecord.location.setOffset(offset);
+            writeRecord.location.setDataFileId(dataFile.getDataFileId());
+            writeRecord.location.setOffset(offset + Journal.BATCH_CONTROL_RECORD_SIZE);
+            size = controlRecord.location.getSize() + writeRecord.location.getSize();
+            dataFile.incrementLength(size);
+            writes.offer(controlRecord);
+            writes.offer(writeRecord);
+        }
+
+        void doAppendBatch(WriteCommand writeRecord) throws IOException {
+            writeRecord.location.setDataFileId(dataFile.getDataFileId());
+            writeRecord.location.setOffset(offset + size);
+            size += writeRecord.location.getSize();
+            dataFile.incrementLength(writeRecord.location.getSize());
+            writes.offer(writeRecord);
+        }
+
+        Location perform(RandomAccessFile file, ReplicationTarget replicator, boolean checksum) throws IOException {
+            DataByteArrayOutputStream buffer = new DataByteArrayOutputStream(size);
+            boolean forceToDisk = false;
+            WriteCommand latest = null;
+
+            // Write an empty batch control record.
+            buffer.reset();
+            buffer.writeInt(BATCH_CONTROL_RECORD_SIZE);
+            buffer.writeByte(Location.BATCH_CONTROL_RECORD_TYPE);
+            buffer.writeInt(0);
+            buffer.write(BATCH_CONTROL_RECORD_MAGIC);
+            buffer.writeLong(0);
+
+            WriteCommand control = writes.peek();
+            Iterator<WriteCommand> commands = writes.iterator();
+            // Skip the control write:
+            commands.next();
+            // Process others:
+            while (commands.hasNext()) {
+                WriteCommand current = commands.next();
+                forceToDisk |= current.sync;
+                buffer.writeInt(current.location.getSize());
+                buffer.writeByte(current.location.getType());
+                buffer.write(current.data.getData(), current.data.getOffset(), current.data.getLength());
+                latest = current;
+            }
+
+            // Now we can fill in the batch control record properly.
+            Buffer sequence = buffer.toBuffer();
+            buffer.reset();
+            buffer.skip(Journal.HEADER_SIZE);
+            buffer.writeInt(sequence.getLength() - Journal.HEADER_SIZE - Journal.BATCH_SIZE);
+            buffer.skip(Journal.BATCH_CONTROL_RECORD_MAGIC.length);
+            if (checksum) {
+                Checksum adler32 = new Adler32();
+                adler32.update(sequence.getData(), sequence.getOffset() + Journal.BATCH_CONTROL_RECORD_SIZE, sequence.getLength() - Journal.BATCH_CONTROL_RECORD_SIZE);
+                buffer.writeLong(adler32.getValue());
+            }
+
+            // Now do the 1 big write.
+            file.seek(offset);
+            file.write(sequence.getData(), sequence.getOffset(), sequence.getLength());
+
+            if (forceToDisk) {
+                IOHelper.sync(file.getFD());
+            }
+
+            if (replicator != null) {
+                replicator.replicate(control.location, sequence, forceToDisk);
+            }
+
+            return latest.location;
+        }
+
+        DataFile getDataFile() {
+            return dataFile;
+        }
+
+        int getSize() {
+            return size;
+        }
+
+        CountDownLatch getLatch() {
+            return latch;
+        }
+
+        Collection<WriteCommand> getWrites() {
+            return Collections.unmodifiableCollection(writes);
+        }
+
+        boolean isEmpty() {
+            return writes.isEmpty();
+        }
+
+    }
+
+    static class WriteCommand implements JournalListener.Write {
+
+        private final Location location;
+        private final boolean sync;
+        private volatile Buffer data;
+
+        WriteCommand(Location location, Buffer data, boolean sync) {
+            this.location = location;
+            this.data = data;
+            this.sync = sync;
+        }
+
+        public Location getLocation() {
+            return location;
+        }
+
+        Buffer getData() {
+            return data;
+        }
+
+        boolean isSync() {
+            return sync;
+        }
+
+    }
+
+    static class WriteFuture implements Future<Boolean> {
+
+        private final CountDownLatch latch;
+
+        WriteFuture(CountDownLatch latch) {
+            this.latch = latch;
+        }
+
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            throw new UnsupportedOperationException("Cannot cancel this type of future!");
+        }
+
+        public boolean isCancelled() {
+            throw new UnsupportedOperationException("Cannot cancel this type of future!");
+        }
+
+        public boolean isDone() {
+            return latch.getCount() == 0;
+        }
+
+        public Boolean get() throws InterruptedException, ExecutionException {
+            latch.await();
+            return true;
+        }
+
+        public Boolean get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
+            boolean success = latch.await(timeout, unit);
+            return success;
+        }
+
+    }
 }

@@ -16,25 +16,20 @@
  */
 package org.fusesource.hawtjournal.api;
 
+import org.fusesource.hawtjournal.api.Journal.WriteBatch;
+import org.fusesource.hawtjournal.api.Journal.WriteCommand;
+import org.fusesource.hawtjournal.api.Journal.WriteFuture;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.RandomAccessFile;
-import java.util.Queue;
+import java.util.Collection;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.zip.Adler32;
-import java.util.zip.Checksum;
-import org.fusesource.hawtjournal.util.IOHelper;
 import org.fusesource.hawtbuf.Buffer;
-import org.fusesource.hawtbuf.DataByteArrayOutputStream;
 import static org.fusesource.hawtjournal.util.LogHelper.*;
 
 /**
@@ -58,6 +53,8 @@ class DataFileAppender {
     private final Journal journal;
     //
     private volatile WriteBatch nextWriteBatch;
+    private volatile DataFile lastAppendDataFile;
+    private volatile RandomAccessFile lastAppendRaf;
     private volatile Thread writer;
     private volatile boolean running;
     private volatile boolean shutdown;
@@ -76,10 +73,10 @@ class DataFileAppender {
         WriteCommand write = new WriteCommand(location, data, sync);
         WriteBatch batch = enqueue(write);
 
-        location.setLatch(batch.latch);
+        location.setLatch(batch.getLatch());
         if (sync) {
             try {
-                batch.latch.await();
+                batch.getLatch().await();
             } catch (InterruptedException e) {
                 throw new InterruptedIOException();
             }
@@ -97,7 +94,7 @@ class DataFileAppender {
                     try {
                         Future result = null;
                         if (nextWriteBatch != null) {
-                            result = new WriteFuture(nextWriteBatch.latch);
+                            result = new WriteFuture(nextWriteBatch.getLatch());
                             batchQueue.put(nextWriteBatch);
                             nextWriteBatch = null;
                         } else {
@@ -141,29 +138,29 @@ class DataFileAppender {
                             DataFile file = journal.getCurrentWriteFile();
                             boolean canBatch = false;
                             currentBatch = new WriteBatch(file, file.getLength(), writeRecord);
-                            canBatch = currentBatch.canBatch(writeRecord);
+                            canBatch = currentBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
                             if (!canBatch) {
                                 file = journal.rotateWriteFile();
                                 currentBatch = new WriteBatch(file, file.getLength(), writeRecord);
                             }
                             WriteCommand controlRecord = new WriteCommand(new Location(), null, false);
                             currentBatch.doFirstBatch(controlRecord, writeRecord);
-                            if (!writeRecord.sync) {
-                                journal.getInflightWrites().put(controlRecord.location, controlRecord);
-                                journal.getInflightWrites().put(writeRecord.location, writeRecord);
+                            if (!writeRecord.isSync()) {
+                                journal.getInflightWrites().put(controlRecord.getLocation(), controlRecord);
+                                journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
                                 nextWriteBatch = currentBatch;
                             } else {
                                 batchQueue.put(currentBatch);
                             }
                             break;
                         } else {
-                            boolean canBatch = nextWriteBatch.canBatch(writeRecord);
-                            if (canBatch && !writeRecord.sync) {
+                            boolean canBatch = nextWriteBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
+                            if (canBatch && !writeRecord.isSync()) {
                                 nextWriteBatch.doAppendBatch(writeRecord);
-                                journal.getInflightWrites().put(writeRecord.location, writeRecord);
+                                journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
                                 currentBatch = nextWriteBatch;
                                 break;
-                            } else if (canBatch && writeRecord.sync) {
+                            } else if (canBatch && writeRecord.isSync()) {
                                 nextWriteBatch.doAppendBatch(writeRecord);
                                 batchQueue.put(nextWriteBatch);
                                 currentBatch = nextWriteBatch;
@@ -201,7 +198,7 @@ class DataFileAppender {
 
                 public void run() {
                     try {
-                        processQueue();
+                        processBatches();
                     } catch (Throwable ex) {
                         warn(ex, ex.getMessage());
                         try {
@@ -253,11 +250,8 @@ class DataFileAppender {
      * accomplished attaching the same CountDownLatch instance to every force
      * request in a group.
      */
-    private void processQueue() {
-        DataFile dataFile = null;
-        RandomAccessFile file = null;
+    private void processBatches() {
         try {
-            DataByteArrayOutputStream buffer = new DataByteArrayOutputStream(journal.getMaxWriteBatchSize());
             boolean last = false;
             while (true) {
                 WriteBatch wb = batchQueue.take();
@@ -266,85 +260,40 @@ class DataFileAppender {
                     last = true;
                 }
 
-                if (!wb.writes.isEmpty()) {
-                    boolean newOrRotated = dataFile != wb.dataFile;
+                if (!wb.isEmpty()) {
+                    boolean newOrRotated = lastAppendDataFile != wb.getDataFile();
                     if (newOrRotated) {
-                        if (file != null) {
-                            file.close();
+                        if (lastAppendRaf != null) {
+                            lastAppendRaf.close();
                         }
-                        dataFile = wb.dataFile;
-                        file = dataFile.openRandomAccessFile();
+                        lastAppendDataFile = wb.getDataFile();
+                        lastAppendRaf = lastAppendDataFile.openRandomAccessFile();
                     }
 
-                    // Write an empty batch control record.
-                    buffer.reset();
-                    buffer.writeInt(Journal.BATCH_CONTROL_RECORD_SIZE);
-                    buffer.writeByte(Location.BATCH_CONTROL_RECORD_TYPE);
-                    buffer.writeInt(0);
-                    buffer.write(Journal.BATCH_CONTROL_RECORD_MAGIC);
-                    buffer.writeLong(0);
+                    // perform batch:
+                    Location latest = wb.perform(lastAppendRaf, journal.getReplicationTarget(), journal.isChecksum());
 
-                    boolean forceToDisk = false;
+                    // Adjust journal length and pointers:
+                    journal.addToTotalLength(wb.getSize());
+                    journal.setLastAppendLocation(latest);
 
-                    WriteCommand control = wb.writes.poll();
-                    WriteCommand latest = null;
-                    for (WriteCommand current : wb.writes) {
-                        forceToDisk |= current.sync;
-                        buffer.writeInt(current.location.getSize());
-                        buffer.writeByte(current.location.getType());
-                        buffer.write(current.data.getData(), current.data.getOffset(), current.data.getLength());
-                        latest = current;
-                    }
-
-                    Buffer sequence = buffer.toBuffer();
-
-                    // Now we can fill in the batch control record properly.
-                    buffer.reset();
-                    buffer.skip(Journal.HEADER_SIZE);
-                    buffer.writeInt(sequence.getLength() - Journal.HEADER_SIZE - Journal.BATCH_SIZE);
-                    buffer.skip(Journal.BATCH_CONTROL_RECORD_MAGIC.length);
-                    if (journal.isChecksum()) {
-                        Checksum checksum = new Adler32();
-                        checksum.update(sequence.getData(), sequence.getOffset() + Journal.BATCH_CONTROL_RECORD_SIZE, sequence.getLength() - Journal.BATCH_CONTROL_RECORD_SIZE);
-                        buffer.writeLong(checksum.getValue());
-                    }
-
-                    // Now do the 1 big write.
-                    file.seek(wb.offset);
-                    file.write(sequence.getData(), sequence.getOffset(), sequence.getLength());
-
-                    ReplicationTarget replicationTarget = journal.getReplicationTarget();
-                    if (replicationTarget != null) {
-                        replicationTarget.replicate(control.location, sequence, forceToDisk);
-                    }
-
-                    if (forceToDisk) {
-                        IOHelper.sync(file.getFD());
-                    }
-
-                    journal.setLastAppendLocation(latest.location);
-
-                    // Now that the data is on disk, remove the writes from the in-flight cache.
-                    journal.getInflightWrites().remove(control.location);
-                    for (WriteCommand current : wb.writes) {
-                        if (!current.sync) {
-                            journal.getInflightWrites().remove(current.location);
+                    // Now that the data is on disk, remove the writes from the in-flight cache and notify listeners.
+                    Collection<WriteCommand> commands = wb.getWrites();
+                    for (WriteCommand current : commands) {
+                        if (!current.isSync()) {
+                            journal.getInflightWrites().remove(current.getLocation());
                         }
                     }
-
                     if (journal.getListener() != null) {
                         try {
-                            journal.getListener().synced(wb.writes.toArray(new WriteCommand[wb.writes.size()]));
+                            journal.getListener().synced(commands.toArray(new WriteCommand[commands.size()]));
                         } catch (Throwable ex) {
                             warn(ex, ex.getMessage());
                         }
                     }
 
-                    // Clear unused data:
-                    wb.writes.clear();
-
                     // Signal any waiting threads that the write is on disk.
-                    wb.latch.countDown();
+                    wb.getLatch().countDown();
                 }
 
                 if (last) {
@@ -355,8 +304,8 @@ class DataFileAppender {
             firstAsyncException.compareAndSet(null, e);
         } finally {
             try {
-                if (file != null) {
-                    file.close();
+                if (lastAppendRaf != null) {
+                    lastAppendRaf.close();
                 }
             } catch (Throwable ignore) {
             }
@@ -364,107 +313,4 @@ class DataFileAppender {
         }
     }
 
-    public class WriteBatch {
-
-        public final DataFile dataFile;
-        public final Queue<WriteCommand> writes = new ConcurrentLinkedQueue<WriteCommand>();
-        public final CountDownLatch latch = new CountDownLatch(1);
-        public final int offset;
-        public volatile int size;
-
-        private WriteBatch() {
-            this.dataFile = null;
-            this.offset = -1;
-        }
-
-        public WriteBatch(DataFile dataFile, int offset, WriteCommand write) throws IOException {
-            this.dataFile = dataFile;
-            this.offset = offset;
-            this.size = Journal.BATCH_CONTROL_RECORD_SIZE;
-        }
-
-        public boolean canBatch(WriteCommand write) throws IOException {
-            int thisBatchSize = size + write.location.getSize();
-            int thisFileLength = offset + thisBatchSize;
-            if (thisBatchSize > journal.getMaxWriteBatchSize() || thisFileLength > journal.getMaxFileLength()) {
-                return false;
-            } else {
-                return true;
-            }
-        }
-
-        public void doFirstBatch(WriteCommand controlRecord, WriteCommand writeRecord) throws IOException {
-            controlRecord.location.setType(Location.BATCH_CONTROL_RECORD_TYPE);
-            controlRecord.location.setSize(Journal.BATCH_CONTROL_RECORD_SIZE);
-            controlRecord.location.setDataFileId(dataFile.getDataFileId());
-            controlRecord.location.setOffset(offset);
-            writeRecord.location.setDataFileId(dataFile.getDataFileId());
-            writeRecord.location.setOffset(offset + Journal.BATCH_CONTROL_RECORD_SIZE);
-            size = controlRecord.location.getSize() + writeRecord.location.getSize();
-            dataFile.incrementLength(size);
-            journal.addToTotalLength(size);
-            writes.offer(controlRecord);
-            writes.offer(writeRecord);
-        }
-
-        public void doAppendBatch(WriteCommand writeRecord) throws IOException {
-            writeRecord.location.setDataFileId(dataFile.getDataFileId());
-            writeRecord.location.setOffset(offset + size);
-            size += writeRecord.location.getSize();
-            dataFile.incrementLength(writeRecord.location.getSize());
-            journal.addToTotalLength(writeRecord.location.getSize());
-            writes.offer(writeRecord);
-        }
-
-    }
-
-    public static class WriteCommand implements JournalListener.Write {
-
-        public final Location location;
-        public final boolean sync;
-        public volatile Buffer data;
-
-        public WriteCommand(Location location, Buffer data, boolean sync) {
-            this.location = location;
-            this.data = data;
-            this.sync = sync;
-        }
-
-        public Location getLocation() {
-            return location;
-        }
-
-    }
-
-    public static class WriteFuture implements Future<Boolean> {
-
-        private final CountDownLatch latch;
-
-        public WriteFuture(CountDownLatch latch) {
-            this.latch = latch;
-        }
-
-        public boolean cancel(boolean mayInterruptIfRunning) {
-            throw new UnsupportedOperationException("Cannot cancel this type of future!");
-        }
-
-        public boolean isCancelled() {
-            throw new UnsupportedOperationException("Cannot cancel this type of future!");
-        }
-
-        public boolean isDone() {
-            return latch.getCount() == 0;
-        }
-
-        public Boolean get() throws InterruptedException, ExecutionException {
-            latch.await();
-            return true;
-        }
-
-        public Boolean get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
-            boolean success = latch.await(timeout, unit);
-            return success;
-        }
-
-    }
 }

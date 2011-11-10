@@ -16,6 +16,7 @@
  */
 package org.fusesource.hawtjournal.api;
 
+import org.fusesource.hawtjournal.api.Journal.WriteCommand;
 import java.util.concurrent.locks.ReentrantLock;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -28,7 +29,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
-import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
 import org.fusesource.hawtbuf.Buffer;
 import org.fusesource.hawtjournal.util.IOHelper;
 import static org.fusesource.hawtjournal.util.LogHelper.*;
@@ -73,7 +73,7 @@ class DataFileAccessor {
         WriteCommand asyncWrite = journal.getInflightWrites().get(location);
         Buffer result = null;
         if (asyncWrite != null) {
-            result = asyncWrite.data;
+            result = asyncWrite.getData();
         } else {
             RandomAccessFile raf = getOrCreateRaf(Thread.currentThread(), location.getDataFileId());
             Lock lock = getOrCreateLock(Thread.currentThread(), location.getDataFileId());
@@ -111,8 +111,8 @@ class DataFileAccessor {
     boolean fillLocationDetails(Location location) throws IOException {
         WriteCommand asyncWrite = journal.getInflightWrites().get(location);
         if (asyncWrite != null) {
-            location.setSize(asyncWrite.location.getSize());
-            location.setType(asyncWrite.location.getType());
+            location.setSize(asyncWrite.getLocation().getSize());
+            location.setType(asyncWrite.getLocation().getType());
             return true;
         } else {
             RandomAccessFile raf = getOrCreateRaf(Thread.currentThread(), location.getDataFileId());
