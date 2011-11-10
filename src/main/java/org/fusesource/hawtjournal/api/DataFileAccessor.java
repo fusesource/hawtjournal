@@ -29,6 +29,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.fusesource.hawtbuf.Buffer;
 import org.fusesource.hawtjournal.util.IOHelper;
 import static org.fusesource.hawtjournal.util.LogHelper.*;
@@ -44,6 +46,9 @@ class DataFileAccessor {
     private final ScheduledExecutorService disposer = Executors.newSingleThreadScheduledExecutor();
     private final ConcurrentMap<Thread, ConcurrentMap<Integer, RandomAccessFile>> perThreadDataFileRafs = new ConcurrentHashMap<Thread, ConcurrentMap<Integer, RandomAccessFile>>();
     private final ConcurrentMap<Thread, ConcurrentMap<Integer, Lock>> perThreadDataFileLocks = new ConcurrentHashMap<Thread, ConcurrentMap<Integer, Lock>>();
+    private final ReadWriteLock compactionLock = new ReentrantReadWriteLock();
+    private final Lock accessorLock = compactionLock.readLock();
+    private final Lock compactorMutex = compactionLock.writeLock();
     //
     private final Journal journal;
 
@@ -53,8 +58,9 @@ class DataFileAccessor {
 
     void updateLocation(Location location, byte type, boolean sync) throws IOException {
         RandomAccessFile raf = getOrCreateRaf(Thread.currentThread(), location.getDataFileId());
-        Lock lock = getOrCreateLock(Thread.currentThread(), location.getDataFileId());
-        lock.lock();
+        Lock threadLock = getOrCreateLock(Thread.currentThread(), location.getDataFileId());
+        accessorLock.lock();
+        threadLock.lock();
         try {
             journal.sync();
             //
@@ -65,7 +71,8 @@ class DataFileAccessor {
                 IOHelper.sync(raf.getFD());
             }
         } finally {
-            lock.unlock();
+            threadLock.unlock();
+            accessorLock.unlock();
         }
     }
 
@@ -76,8 +83,9 @@ class DataFileAccessor {
             result = asyncWrite.getData();
         } else {
             RandomAccessFile raf = getOrCreateRaf(Thread.currentThread(), location.getDataFileId());
-            Lock lock = getOrCreateLock(Thread.currentThread(), location.getDataFileId());
-            lock.lock();
+            Lock threadLock = getOrCreateLock(Thread.currentThread(), location.getDataFileId());
+            accessorLock.lock();
+            threadLock.lock();
             try {
                 if (location.getSize() == Location.NOT_SET) {
                     raf.seek(location.getOffset());
@@ -98,7 +106,8 @@ class DataFileAccessor {
             } catch (RuntimeException e) {
                 throw new IOException("Invalid location: " + location + ", : " + e);
             } finally {
-                lock.unlock();
+                threadLock.unlock();
+                accessorLock.unlock();
             }
         }
         if (!location.isDeletedRecord()) {
@@ -116,8 +125,9 @@ class DataFileAccessor {
             return true;
         } else {
             RandomAccessFile raf = getOrCreateRaf(Thread.currentThread(), location.getDataFileId());
-            Lock lock = getOrCreateLock(Thread.currentThread(), location.getDataFileId());
-            lock.lock();
+            Lock threadLock = getOrCreateLock(Thread.currentThread(), location.getDataFileId());
+            accessorLock.lock();
+            threadLock.lock();
             try {
                 if (raf.length() > location.getOffset()) {
                     raf.seek(location.getOffset());
@@ -132,7 +142,8 @@ class DataFileAccessor {
                     return false;
                 }
             } finally {
-                lock.unlock();
+                threadLock.unlock();
+                accessorLock.unlock();
             }
         }
     }
@@ -162,6 +173,14 @@ class DataFileAccessor {
 
     void close() {
         disposer.shutdown();
+    }
+    
+    void pause() {
+        compactorMutex.lock();
+    }
+    
+    void resume() {
+        compactorMutex.unlock();
     }
 
     private RandomAccessFile getOrCreateRaf(Thread thread, Integer file) throws IOException {

@@ -184,21 +184,27 @@ public class Journal implements Iterable<Location> {
     public synchronized void compact() throws IOException {
         if (!opened) {
             return;
-        }
-        for (DataFile file : dataFiles.values()) {
-            // Can't compact the data file (or subsequent files) that is currently being written to:
-            if (file.getDataFileId() >= lastAppendLocation.get().getDataFileId()) {
-                continue;
-            } else {
-                Location firstUserLocation = goToFirstLocation(file, Location.USER_RECORD_TYPE, false);
-                if (firstUserLocation == null) {
-                    removeDataFile(file);
-                } else {
-                    Location firstDeletedLocation = goToFirstLocation(file, Location.DELETED_RECORD_TYPE, false);
-                    if (firstDeletedLocation != null) {
-                        compactDataFile(file, firstUserLocation);
+        } else {
+            accessor.pause();
+            try {
+                for (DataFile file : dataFiles.values()) {
+                    // Can't compact the data file (or subsequent files) that is currently being written to:
+                    if (file.getDataFileId() >= lastAppendLocation.get().getDataFileId()) {
+                        continue;
+                    } else {
+                        Location firstUserLocation = goToFirstLocation(file, Location.USER_RECORD_TYPE, false);
+                        if (firstUserLocation == null) {
+                            removeDataFile(file);
+                        } else {
+                            Location firstDeletedLocation = goToFirstLocation(file, Location.DELETED_RECORD_TYPE, false);
+                            if (firstDeletedLocation != null) {
+                                compactDataFile(file, firstUserLocation);
+                            }
+                        }
                     }
                 }
+            } finally {
+                accessor.resume();
             }
         }
     }

@@ -234,6 +234,51 @@ public class JournalTest {
         assertTrue(executor.awaitTermination(1, TimeUnit.MINUTES));
         assertEquals(iterations, counter.get());
     }
+    
+    @Test
+    public void testConcurrentWriteReadAndCompact() throws Exception {
+        final AtomicInteger counter = new AtomicInteger(0);
+        ExecutorService executor = Executors.newFixedThreadPool(25);
+        int iterations = 1000;
+        //
+        for (int i = 0; i < iterations; i++) {
+            final int index = i;
+            executor.submit(new Runnable() {
+
+                public void run() {
+                    try {
+                        boolean sync = index % 2 == 0 ? true : false;
+                        String write = new String("DATA" + index);
+                        Location location = journal.write(ByteBuffer.wrap(write.getBytes("UTF-8")), sync);
+                        String read = new String(journal.read(location).array(), "UTF-8");
+                        if (read.equals("DATA" + index)) {
+                            counter.incrementAndGet();
+                        } else {
+                            System.out.println(write);
+                            System.out.println(read);
+                        }
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                }
+
+            });
+        }
+        executor.submit(new Runnable() {
+
+            public void run() {
+                try {
+                    journal.compact();
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }
+
+        });
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(1, TimeUnit.MINUTES));
+        assertEquals(iterations, counter.get());
+    }
 
     protected void configure(Journal journal) {
         journal.setMaxFileLength(1024);
