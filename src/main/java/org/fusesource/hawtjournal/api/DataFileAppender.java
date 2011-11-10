@@ -137,14 +137,14 @@ class DataFileAppender {
                         if (nextWriteBatch == null) {
                             DataFile file = journal.getCurrentWriteFile();
                             boolean canBatch = false;
-                            currentBatch = new WriteBatch(file, file.getLength(), writeRecord);
+                            currentBatch = new WriteBatch(file, file.getLength());
                             canBatch = currentBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
                             if (!canBatch) {
                                 file = journal.rotateWriteFile();
-                                currentBatch = new WriteBatch(file, file.getLength(), writeRecord);
+                                currentBatch = new WriteBatch(file, file.getLength());
                             }
-                            WriteCommand controlRecord = new WriteCommand(new Location(), null, false);
-                            currentBatch.doFirstBatch(controlRecord, writeRecord);
+                            WriteCommand controlRecord = currentBatch.prepareBatch();
+                            currentBatch.appendBatch(writeRecord);
                             if (!writeRecord.isSync()) {
                                 journal.getInflightWrites().put(controlRecord.getLocation(), controlRecord);
                                 journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
@@ -156,12 +156,12 @@ class DataFileAppender {
                         } else {
                             boolean canBatch = nextWriteBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
                             if (canBatch && !writeRecord.isSync()) {
-                                nextWriteBatch.doAppendBatch(writeRecord);
+                                nextWriteBatch.appendBatch(writeRecord);
                                 journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
                                 currentBatch = nextWriteBatch;
                                 break;
                             } else if (canBatch && writeRecord.isSync()) {
-                                nextWriteBatch.doAppendBatch(writeRecord);
+                                nextWriteBatch.appendBatch(writeRecord);
                                 batchQueue.put(nextWriteBatch);
                                 currentBatch = nextWriteBatch;
                                 nextWriteBatch = null;

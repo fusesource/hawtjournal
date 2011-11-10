@@ -42,8 +42,8 @@ import static org.fusesource.hawtjournal.util.LogHelper.*;
 class DataFileAccessor {
 
     private final ScheduledExecutorService disposer = Executors.newSingleThreadScheduledExecutor();
-    private final ConcurrentMap<Thread, ConcurrentMap<Integer, RandomAccessFile>> perThreadRafs = new ConcurrentHashMap<Thread, ConcurrentMap<Integer, RandomAccessFile>>();
-    private final ConcurrentMap<Thread, ConcurrentMap<Integer, Lock>> perThreadRafLocks = new ConcurrentHashMap<Thread, ConcurrentMap<Integer, Lock>>();
+    private final ConcurrentMap<Thread, ConcurrentMap<Integer, RandomAccessFile>> perThreadDataFileRafs = new ConcurrentHashMap<Thread, ConcurrentMap<Integer, RandomAccessFile>>();
+    private final ConcurrentMap<Thread, ConcurrentMap<Integer, Lock>> perThreadDataFileLocks = new ConcurrentHashMap<Thread, ConcurrentMap<Integer, Lock>>();
     //
     private final Journal journal;
 
@@ -137,6 +137,25 @@ class DataFileAccessor {
         }
     }
 
+    void dispose(DataFile dataFile) {
+        for (Entry<Thread, ConcurrentMap<Integer, RandomAccessFile>> threadRafs : perThreadDataFileRafs.entrySet()) {
+            for (Entry<Integer, RandomAccessFile> raf : threadRafs.getValue().entrySet()) {
+                if (raf.getKey().equals(dataFile.getDataFileId())) {
+                    Lock lock = getOrCreateLock(threadRafs.getKey(), raf.getKey());
+                    lock.lock();
+                    try {
+                        removeRaf(threadRafs.getKey(), raf.getKey());
+                        return;
+                    } catch (IOException ex) {
+                        warn(ex, ex.getMessage());
+                    } finally {
+                        lock.unlock();
+                    }
+                }
+            }
+        }
+    }
+
     void open() {
         disposer.scheduleAtFixedRate(new ResourceDisposer(), journal.getDisposeInterval(), journal.getDisposeInterval(), TimeUnit.MILLISECONDS);
     }
@@ -146,10 +165,10 @@ class DataFileAccessor {
     }
 
     private RandomAccessFile getOrCreateRaf(Thread thread, Integer file) throws IOException {
-        ConcurrentMap<Integer, RandomAccessFile> rafs = perThreadRafs.get(thread);
+        ConcurrentMap<Integer, RandomAccessFile> rafs = perThreadDataFileRafs.get(thread);
         if (rafs == null) {
             rafs = new ConcurrentHashMap<Integer, RandomAccessFile>();
-            perThreadRafs.put(thread, rafs);
+            perThreadDataFileRafs.put(thread, rafs);
         }
         RandomAccessFile raf = rafs.get(file);
         if (raf == null) {
@@ -160,15 +179,15 @@ class DataFileAccessor {
     }
 
     private void removeRaf(Thread thread, Integer file) throws IOException {
-        RandomAccessFile raf = perThreadRafs.get(thread).remove(file);
+        RandomAccessFile raf = perThreadDataFileRafs.get(thread).remove(file);
         raf.close();
     }
 
     private Lock getOrCreateLock(Thread thread, Integer file) {
-        ConcurrentMap<Integer, Lock> locks = perThreadRafLocks.get(thread);
+        ConcurrentMap<Integer, Lock> locks = perThreadDataFileLocks.get(thread);
         if (locks == null) {
             locks = new ConcurrentHashMap<Integer, Lock>();
-            perThreadRafLocks.put(thread, locks);
+            perThreadDataFileLocks.put(thread, locks);
         }
         Lock lock = locks.get(file);
         if (lock == null) {
@@ -178,21 +197,16 @@ class DataFileAccessor {
         return lock;
     }
 
-    private void removeLock(Thread thread, Integer file) {
-        perThreadRafLocks.get(thread).remove(file);
-    }
-
     private class ResourceDisposer implements Runnable {
 
         public void run() {
             Set<Thread> deadThreads = new HashSet<Thread>();
-            for (Entry<Thread, ConcurrentMap<Integer, RandomAccessFile>> threadRafs : perThreadRafs.entrySet()) {
+            for (Entry<Thread, ConcurrentMap<Integer, RandomAccessFile>> threadRafs : perThreadDataFileRafs.entrySet()) {
                 for (Entry<Integer, RandomAccessFile> raf : threadRafs.getValue().entrySet()) {
                     Lock lock = getOrCreateLock(threadRafs.getKey(), raf.getKey());
                     if (lock.tryLock()) {
                         try {
                             removeRaf(threadRafs.getKey(), raf.getKey());
-                            removeLock(threadRafs.getKey(), raf.getKey());
                             if (!threadRafs.getKey().isAlive()) {
                                 deadThreads.add(threadRafs.getKey());
                             }
@@ -205,8 +219,8 @@ class DataFileAccessor {
                 }
             }
             for (Thread deadThread : deadThreads) {
-                perThreadRafs.remove(deadThread);
-                perThreadRafLocks.remove(deadThread);
+                perThreadDataFileRafs.remove(deadThread);
+                perThreadDataFileLocks.remove(deadThread);
             }
         }
 

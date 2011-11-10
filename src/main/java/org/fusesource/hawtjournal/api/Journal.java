@@ -47,7 +47,7 @@ import static org.fusesource.hawtjournal.util.LogHelper.*;
 
 /**
  * Journal implementation based on append-only rotating logs and checksummed records, with fully concurrent writes and reads, 
- * dynamic batching and "dead" logs cleanup.<br/>
+ * dynamic batching and logs compaction.<br/>
  * Journal records can be written, read and deleted by providing a {@link Location} object.<br/>
  * The whole journal can be replayed by simply iterating through it in a foreach block.<br/>
  * 
@@ -177,21 +177,27 @@ public class Journal implements Iterable<Location> {
     }
 
     /**
-     * Cleanup the journal from logs having only deleted entries.
+     * Compact the journal, reducing size of logs containing deleted entries and completely removing completely empty (with only deleted entries) logs.
      *
      * @throws IOException
      */
-    public synchronized void cleanup() throws IOException {
+    public synchronized void compact() throws IOException {
         if (!opened) {
             return;
         }
         for (DataFile file : dataFiles.values()) {
-            // Can't cleanup the data file (or subsequent files) that is currently being written to:
+            // Can't compact the data file (or subsequent files) that is currently being written to:
             if (file.getDataFileId() >= lastAppendLocation.get().getDataFileId()) {
                 continue;
             } else {
-                if (!hasUserLocations(file)) {
-                    forceRemoveDataFile(file);
+                Location firstUserLocation = goToFirstLocation(file, Location.USER_RECORD_TYPE, false);
+                if (firstUserLocation == null) {
+                    removeDataFile(file);
+                } else {
+                    Location firstDeletedLocation = goToFirstLocation(file, Location.DELETED_RECORD_TYPE, false);
+                    if (firstDeletedLocation != null) {
+                        compactDataFile(file, firstUserLocation);
+                    }
                 }
             }
         }
@@ -596,7 +602,7 @@ public class Journal implements Iterable<Location> {
         return dataFile.getNext();
     }
 
-    private void forceRemoveDataFile(DataFile dataFile) throws IOException {
+    private void removeDataFile(DataFile dataFile) throws IOException {
         dataFiles.remove(dataFile.getDataFileId());
         totalLength.addAndGet(-dataFile.getLength());
         if (archiveFiles) {
@@ -608,6 +614,41 @@ public class Journal implements Iterable<Location> {
             } else {
                 warn("Failed to discard data file %s", dataFile.getFile());
             }
+        }
+    }
+
+    private void compactDataFile(DataFile currentFile, Location firstUserLocation) throws IOException {
+        DataFile tmpFile = new DataFile(
+                new File(currentFile.getFile().getParent(), filePrefix + currentFile.getDataFileId() + ".tmp" + fileSuffix),
+                currentFile.getDataFileId());
+        RandomAccessFile raf = tmpFile.openRandomAccessFile();
+        try {
+            Location currentUserLocation = firstUserLocation;
+            WriteBatch batch = new WriteBatch(tmpFile, 0);
+            batch.prepareBatch();
+            while (currentUserLocation != null) {
+                Buffer data = accessor.readLocation(currentUserLocation);
+                WriteCommand write = new WriteCommand(new Location(currentUserLocation), data, true);
+                batch.appendBatch(write);
+                currentUserLocation = goToNextLocation(currentUserLocation, Location.USER_RECORD_TYPE, false);
+            }
+            batch.perform(raf, null, true);
+        } finally {
+            if (raf != null) {
+                raf.close();
+            }
+        }
+        if (currentFile.getFile().delete()) {
+            accessor.dispose(currentFile);
+            totalLength.addAndGet(-currentFile.getLength());
+            totalLength.addAndGet(tmpFile.getLength());
+            if (tmpFile.getFile().renameTo(currentFile.getFile())) {
+                currentFile.setLength(tmpFile.getLength());
+            } else {
+                throw new IOException("Cannot rename file: " + tmpFile.getFile());
+            }
+        } else {
+            throw new IOException("Cannot remove file: " + currentFile.getFile());
         }
     }
 
@@ -640,11 +681,6 @@ public class Journal implements Iterable<Location> {
         return location;
     }
 
-    private boolean hasUserLocations(DataFile file) throws IOException {
-        Location start = goToFirstLocation(file, Location.USER_RECORD_TYPE, false);
-        return start != null && start.isUserRecord();
-    }
-
     static class WriteBatch {
 
         private final DataFile dataFile;
@@ -658,7 +694,7 @@ public class Journal implements Iterable<Location> {
             this.offset = -1;
         }
 
-        WriteBatch(DataFile dataFile, int offset, WriteCommand write) throws IOException {
+        WriteBatch(DataFile dataFile, int offset) throws IOException {
             this.dataFile = dataFile;
             this.offset = offset;
             this.size = BATCH_CONTROL_RECORD_SIZE;
@@ -674,20 +710,19 @@ public class Journal implements Iterable<Location> {
             }
         }
 
-        void doFirstBatch(WriteCommand controlRecord, WriteCommand writeRecord) throws IOException {
+        WriteCommand prepareBatch() throws IOException {
+            WriteCommand controlRecord = new WriteCommand(new Location(), null, false);
             controlRecord.location.setType(Location.BATCH_CONTROL_RECORD_TYPE);
             controlRecord.location.setSize(Journal.BATCH_CONTROL_RECORD_SIZE);
             controlRecord.location.setDataFileId(dataFile.getDataFileId());
             controlRecord.location.setOffset(offset);
-            writeRecord.location.setDataFileId(dataFile.getDataFileId());
-            writeRecord.location.setOffset(offset + Journal.BATCH_CONTROL_RECORD_SIZE);
-            size = controlRecord.location.getSize() + writeRecord.location.getSize();
+            size = controlRecord.location.getSize();
             dataFile.incrementLength(size);
             writes.offer(controlRecord);
-            writes.offer(writeRecord);
+            return controlRecord;
         }
 
-        void doAppendBatch(WriteCommand writeRecord) throws IOException {
+        void appendBatch(WriteCommand writeRecord) throws IOException {
             writeRecord.location.setDataFileId(dataFile.getDataFileId());
             writeRecord.location.setOffset(offset + size);
             size += writeRecord.location.getSize();

@@ -107,7 +107,7 @@ public class JournalTest {
     }
 
     @Test
-    public void testLogDeleteAndCleanup() throws Exception {
+    public void testLogCompaction() throws Exception {
         int iterations = 1000;
         for (int i = 0; i < iterations / 2; i++) {
             boolean sync = i % 2 == 0 ? true : false;
@@ -120,7 +120,7 @@ public class JournalTest {
         }
         //
         int preCleanupFiles = journal.getFiles().size();
-        journal.cleanup();
+        journal.compact();
         assertTrue(journal.getFiles().size() < preCleanupFiles);
         //
         int i = iterations / 2;
