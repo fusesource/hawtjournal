@@ -60,7 +60,7 @@ public class JournalTest {
         deleteFilesInDirectory(dir);
         dir.delete();
     }
-    
+
     @Test
     public void testLogWritingAndReplaying() throws Exception {
         int iterations = 10;
@@ -107,7 +107,7 @@ public class JournalTest {
     }
 
     @Test
-    public void testLogDeleteAndCleanup() throws Exception {
+    public void testLogCompaction() throws Exception {
         int iterations = 1000;
         for (int i = 0; i < iterations / 2; i++) {
             boolean sync = i % 2 == 0 ? true : false;
@@ -120,7 +120,7 @@ public class JournalTest {
         }
         //
         int preCleanupFiles = journal.getFiles().size();
-        journal.cleanup();
+        journal.compact();
         assertTrue(journal.getFiles().size() < preCleanupFiles);
         //
         int i = iterations / 2;
@@ -188,7 +188,7 @@ public class JournalTest {
             journal.write(data, false);
         }
         journal.close();
-        assertTrue("queued data is written:" + journal.getInflightWrites().size(), journal.getInflightWrites().isEmpty());
+        assertTrue(journal.getInflightWrites().isEmpty());
     }
 
     @Test
@@ -197,7 +197,7 @@ public class JournalTest {
         final int iterations = 10;
         for (int i = 0; i < iterations; i++) {
             journal.write(data, true);
-            assertTrue("queued data is written", journal.getInflightWrites().isEmpty());
+            assertTrue(journal.getInflightWrites().isEmpty());
         }
     }
 
@@ -214,9 +214,14 @@ public class JournalTest {
                 public void run() {
                     try {
                         boolean sync = index % 2 == 0 ? true : false;
-                        Location location = journal.write(ByteBuffer.wrap(new String("DATA" + index).getBytes("UTF-8")), sync);
-                        if (new String(journal.read(location).array(), "UTF-8").equals("DATA" + index)) {
+                        String write = new String("DATA" + index);
+                        Location location = journal.write(ByteBuffer.wrap(write.getBytes("UTF-8")), sync);
+                        String read = new String(journal.read(location).array(), "UTF-8");
+                        if (read.equals("DATA" + index)) {
                             counter.incrementAndGet();
+                        } else {
+                            System.out.println(write);
+                            System.out.println(read);
                         }
                     } catch (Exception ex) {
                         ex.printStackTrace();
@@ -225,6 +230,51 @@ public class JournalTest {
 
             });
         }
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(1, TimeUnit.MINUTES));
+        assertEquals(iterations, counter.get());
+    }
+    
+    @Test
+    public void testConcurrentWriteReadAndCompact() throws Exception {
+        final AtomicInteger counter = new AtomicInteger(0);
+        ExecutorService executor = Executors.newFixedThreadPool(25);
+        int iterations = 1000;
+        //
+        for (int i = 0; i < iterations; i++) {
+            final int index = i;
+            executor.submit(new Runnable() {
+
+                public void run() {
+                    try {
+                        boolean sync = index % 2 == 0 ? true : false;
+                        String write = new String("DATA" + index);
+                        Location location = journal.write(ByteBuffer.wrap(write.getBytes("UTF-8")), sync);
+                        String read = new String(journal.read(location).array(), "UTF-8");
+                        if (read.equals("DATA" + index)) {
+                            counter.incrementAndGet();
+                        } else {
+                            System.out.println(write);
+                            System.out.println(read);
+                        }
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                }
+
+            });
+        }
+        executor.submit(new Runnable() {
+
+            public void run() {
+                try {
+                    journal.compact();
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }
+
+        });
         executor.shutdown();
         assertTrue(executor.awaitTermination(1, TimeUnit.MINUTES));
         assertEquals(iterations, counter.get());
