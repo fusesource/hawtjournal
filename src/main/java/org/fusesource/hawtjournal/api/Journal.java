@@ -16,36 +16,38 @@
  */
 package org.fusesource.hawtjournal.api;
 
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.Iterator;
-import java.util.concurrent.ConcurrentMap;
 import java.util.Set;
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.HashSet;
 import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.Adler32;
 import java.util.zip.Checksum;
 import org.fusesource.hawtbuf.Buffer;
-import org.fusesource.hawtbuf.DataByteArrayInputStream;
-import org.fusesource.hawtjournal.api.DataFileAppender.WriteCommand;
+import org.fusesource.hawtbuf.DataByteArrayOutputStream;
+import org.fusesource.hawtjournal.util.IOHelper;
 import static org.fusesource.hawtjournal.util.LogHelper.*;
 
 /**
- * Journal implementation based on append-only rotating logs and checksummed records, with fixed concurrent reads,
- * full concurrent writes, dynamic batching and "dead" logs cleanup.<br/>
+ * Journal implementation based on append-only rotating logs and checksummed records, with fully concurrent writes and reads, 
+ * dynamic batching and logs compaction.<br/>
  * Journal records can be written, read and deleted by providing a {@link Location} object.<br/>
  * The whole journal can be replayed by simply iterating through it in a foreach block.<br/>
  * 
@@ -54,58 +56,49 @@ import static org.fusesource.hawtjournal.util.LogHelper.*;
  */
 public class Journal implements Iterable<Location> {
 
-    public static final byte NO_RECORD_TYPE = 0;
-    public static final byte USER_RECORD_TYPE = 1;
-    public static final byte BATCH_CONTROL_RECORD_TYPE = 2;
-    public static final byte DELETED_RECORD_TYPE = 3;
+    static final int RECORD_SIZE = 4;
+    static final int TYPE_SIZE = 1;
+    static final int HEADER_SIZE = RECORD_SIZE + TYPE_SIZE;
     //
-    public static final int RECORD_SIZE = 4;
-    public static final int TYPE_SIZE = 1;
-    public static final int HEADER_SIZE = RECORD_SIZE + TYPE_SIZE;
+    static final int BATCH_SIZE = 4;
+    static final int CHECKSUM_SIZE = 8;
+    static final byte[] BATCH_CONTROL_RECORD_MAGIC = "WRITE BATCH".getBytes(Charset.forName("UTF-8"));
+    static final int BATCH_CONTROL_RECORD_SIZE = HEADER_SIZE + BATCH_SIZE + BATCH_CONTROL_RECORD_MAGIC.length + CHECKSUM_SIZE;
     //
-    public static final int BATCH_SIZE = 4;
-    public static final int CHECKSUM_SIZE = 8;
-    public static final byte[] BATCH_CONTROL_RECORD_MAGIC = "WRITE BATCH".getBytes(Charset.forName("UTF-8"));
-    public static final int BATCH_CONTROL_RECORD_SIZE = HEADER_SIZE + BATCH_CONTROL_RECORD_MAGIC.length + BATCH_SIZE + CHECKSUM_SIZE;
+    static final String DEFAULT_DIRECTORY = ".";
+    static final String DEFAULT_ARCHIVE_DIRECTORY = "data-archive";
+    static final String DEFAULT_FILE_PREFIX = "db-";
+    static final String DEFAULT_FILE_SUFFIX = ".log";
+    static final int DEFAULT_MAX_FILE_LENGTH = 1024 * 1024 * 32;
+    static final int DEFAULT_DISPOSE_INTERVAL = 1000 * 60;
+    static final int MIN_FILE_LENGTH = 1024;
+    static final int DEFAULT_MAX_BATCH_SIZE = DEFAULT_MAX_FILE_LENGTH;
     //
-    public static final String DEFAULT_DIRECTORY = ".";
-    public static final String DEFAULT_ARCHIVE_DIRECTORY = "data-archive";
-    public static final String DEFAULT_FILE_PREFIX = "db-";
-    public static final String DEFAULT_FILE_SUFFIX = ".log";
-    public static final int DEFAULT_MAX_FILE_LENGTH = 1024 * 1024 * 32;
-    public static final int DEFAULT_DISPOSE_INTERVAL = 1000 * 30;
-    public static final int MIN_FILE_LENGTH = 1024;
-    //
-    public static final int DEFAULT_MAX_READERS_PER_FILE = Runtime.getRuntime().availableProcessors();
-    //
-    public static final int DEFAULT_MAX_BATCH_SIZE = DEFAULT_MAX_FILE_LENGTH;
-    //
+    private final ConcurrentNavigableMap<Integer, DataFile> dataFiles = new ConcurrentSkipListMap<Integer, DataFile>();
     private final ConcurrentNavigableMap<Location, WriteCommand> inflightWrites = new ConcurrentSkipListMap<Location, WriteCommand>();
+    private final AtomicReference<Location> lastAppendLocation = new AtomicReference<Location>();
+    private final AtomicLong totalLength = new AtomicLong();
     //
     private File directory = new File(DEFAULT_DIRECTORY);
     private File directoryArchive = new File(DEFAULT_ARCHIVE_DIRECTORY);
+    //
     private String filePrefix = DEFAULT_FILE_PREFIX;
     private String fileSuffix = DEFAULT_FILE_SUFFIX;
-    private boolean opened;
-    private int maxReadersPerFile = DEFAULT_MAX_READERS_PER_FILE;
+    private int maxWriteBatchSize = DEFAULT_MAX_BATCH_SIZE;
     private int maxFileLength = DEFAULT_MAX_FILE_LENGTH;
+    private long disposeInterval = DEFAULT_DISPOSE_INTERVAL;
+    private boolean checksum = true;
+    //
     private DataFileAppender appender;
-    private DataFileAccessorPool accessorPool;
-    private final ConcurrentMap<Integer, DataFile> fileMap = new ConcurrentHashMap<Integer, DataFile>();
-    private final ConcurrentMap<File, DataFile> fileByFileMap = new ConcurrentHashMap<File, DataFile>();
-    private final CopyOnWriteArrayList<DataFile> dataFiles = new CopyOnWriteArrayList<DataFile>();
-    private final AtomicReference<Location> lastAppendLocation = new AtomicReference<Location>();
-    private Runnable disposeTask;
-    private final AtomicLong totalLength = new AtomicLong();
+    private DataFileAccessor accessor;
+    //
+    private boolean opened;
+    //
     private boolean archiveFiles;
-    private boolean checksum;
+    //
     private JournalListener listener;
     //
-    private int maxWriteBatchSize = DEFAULT_MAX_BATCH_SIZE;
-    //
     private ReplicationTarget replicationTarget;
-    //
-    private ScheduledExecutorService scheduler;
 
     /**
      * Open the journal, eventually recovering it if already existent.
@@ -125,8 +118,11 @@ public class Journal implements Iterable<Location> {
         }
 
         long start = System.currentTimeMillis();
-        accessorPool = new DataFileAccessorPool(this);
+
         opened = true;
+
+        accessor = new DataFileAccessor(this);
+        accessor.open();
 
         appender = new DataFileAppender(this);
         appender.open();
@@ -138,8 +134,7 @@ public class Journal implements Iterable<Location> {
             }
 
         });
-
-        if (files != null) {
+        if (files != null && files.length > 0) {
             for (int i = 0; i < files.length; i++) {
                 try {
                     File file = files[i];
@@ -147,45 +142,20 @@ public class Journal implements Iterable<Location> {
                     String numStr = n.substring(filePrefix.length(), n.length() - fileSuffix.length());
                     int num = Integer.parseInt(numStr);
                     DataFile dataFile = new DataFile(file, num);
-                    fileMap.put(dataFile.getDataFileId(), dataFile);
+                    dataFiles.put(dataFile.getDataFileId(), dataFile);
                     totalLength.addAndGet(dataFile.getLength());
                 } catch (NumberFormatException e) {
                     // Ignore file that do not match the pattern.
                 }
             }
-
-            // Sort the list so that we can link the DataFiles together in the
-            // right order.
-            List<DataFile> l = new ArrayList<DataFile>(fileMap.values());
-            Collections.sort(l);
-            for (DataFile df : l) {
-                if (!dataFiles.isEmpty()) {
-                    dataFiles.get(dataFiles.size() - 1).setNext(df);
-                }
-                dataFiles.add(df);
-                fileByFileMap.put(df.getFile(), df);
+            try {
+                Location recovered = recoveryCheck();
+                lastAppendLocation.set(recovered);
+            } catch (IOException e) {
+                warn(e, "Recovery check failed!");
             }
         }
 
-        getCurrentWriteFile();
-        try {
-            Location l = recoveryCheck(dataFiles.get(dataFiles.size() - 1));
-            lastAppendLocation.set(l);
-        } catch (IOException e) {
-            warn(e, "recovery check failed");
-        }
-
-        disposeTask = new Runnable() {
-
-            public void run() {
-                if (accessorPool != null) {
-                    accessorPool.disposeUnused();
-                }
-            }
-
-        };
-        scheduler = Executors.newScheduledThreadPool(1);
-        scheduler.scheduleAtFixedRate(disposeTask, DEFAULT_DISPOSE_INTERVAL, DEFAULT_DISPOSE_INTERVAL, TimeUnit.MILLISECONDS);
         long end = System.currentTimeMillis();
         trace("Startup took: %d ms", (end - start));
     }
@@ -199,33 +169,42 @@ public class Journal implements Iterable<Location> {
         if (!opened) {
             return;
         }
-        scheduler.shutdownNow();
-        accessorPool.close();
+        accessor.close();
         appender.close();
-        fileMap.clear();
-        fileByFileMap.clear();
         dataFiles.clear();
-        lastAppendLocation.set(null);
+        inflightWrites.clear();
         opened = false;
     }
 
     /**
-     * Cleanup the journal from logs having only deleted entries.
+     * Compact the journal, reducing size of logs containing deleted entries and completely removing completely empty (with only deleted entries) logs.
      *
      * @throws IOException
      */
-    public synchronized void cleanup() throws IOException {
+    public synchronized void compact() throws IOException {
         if (!opened) {
             return;
-        }
-        for (DataFile file : dataFiles) {
-            // Can't cleanup the data file (or subsequent files) that is currently being written to:
-            if (file.getDataFileId() >= lastAppendLocation.get().getDataFileId()) {
-                continue;
-            } else {
-                if (!hasValidLocations(file)) {
-                    forceRemoveDataFile(file);
+        } else {
+            accessor.pause();
+            try {
+                for (DataFile file : dataFiles.values()) {
+                    // Can't compact the data file (or subsequent files) that is currently being written to:
+                    if (file.getDataFileId() >= lastAppendLocation.get().getDataFileId()) {
+                        continue;
+                    } else {
+                        Location firstUserLocation = goToFirstLocation(file, Location.USER_RECORD_TYPE, false);
+                        if (firstUserLocation == null) {
+                            removeDataFile(file);
+                        } else {
+                            Location firstDeletedLocation = goToFirstLocation(file, Location.DELETED_RECORD_TYPE, false);
+                            if (firstDeletedLocation != null) {
+                                compactDataFile(file, firstUserLocation);
+                            }
+                        }
+                    }
                 }
+            } finally {
+                accessor.resume();
             }
         }
     }
@@ -239,15 +218,8 @@ public class Journal implements Iterable<Location> {
      * @throws IllegalStateException
      */
     public ByteBuffer read(Location location) throws IOException, IllegalStateException {
-        DataFile dataFile = getDataFile(location);
-        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
-        Buffer rc = null;
-        try {
-            rc = reader.readRecord(location);
-        } finally {
-            accessorPool.closeDataFileAccessor(reader);
-        }
-        return rc.toByteBuffer();
+        Buffer buffer = accessor.readLocation(location);
+        return buffer.toByteBuffer();
     }
 
     /**
@@ -261,7 +233,7 @@ public class Journal implements Iterable<Location> {
      * @throws IllegalStateException
      */
     public Location write(ByteBuffer data, boolean sync) throws IOException, IllegalStateException {
-        Location loc = appender.storeItem(new Buffer(data), Journal.USER_RECORD_TYPE, sync);
+        Location loc = appender.storeItem(new Buffer(data), Location.USER_RECORD_TYPE, sync);
         return loc;
     }
 
@@ -273,13 +245,7 @@ public class Journal implements Iterable<Location> {
      * @throws IllegalStateException
      */
     public void delete(Location location) throws IOException, IllegalStateException {
-        DataFile dataFile = getDataFile(location);
-        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
-        try {
-            reader.updateRecord(location, DELETED_RECORD_TYPE, true);
-        } finally {
-            accessorPool.closeDataFileAccessor(reader);
-        }
+        accessor.updateLocation(location, Location.DELETED_RECORD_TYPE, true);
     }
 
     /**
@@ -300,7 +266,7 @@ public class Journal implements Iterable<Location> {
                 if (next != null) {
                     try {
                         Location current = next;
-                        next = goToNextLocation(current, true, true);
+                        next = goToNextLocation(current, Location.USER_RECORD_TYPE, true);
                         return current;
                     } catch (IOException ex) {
                         throw new IllegalStateException(ex.getMessage(), ex);
@@ -324,7 +290,7 @@ public class Journal implements Iterable<Location> {
 
             private Location init() {
                 try {
-                    return goToFirstLocation(dataFiles.get(0), true, true);
+                    return goToFirstLocation(dataFiles.firstEntry().getValue(), Location.USER_RECORD_TYPE, true);
                 } catch (IOException ex) {
                     throw new IllegalStateException(ex.getMessage(), ex);
                 }
@@ -338,7 +304,11 @@ public class Journal implements Iterable<Location> {
      * @return
      */
     public Set<File> getFiles() {
-        return fileByFileMap.keySet();
+        Set<File> result = new HashSet<File>();
+        for (DataFile dataFile : dataFiles.values()) {
+            result.add(dataFile.getFile());
+        }
+        return result;
     }
 
     /**
@@ -500,35 +470,31 @@ public class Journal implements Iterable<Location> {
     }
 
     /**
-     * Get the max number of concurrent readers per log file.
-     * @return
+     * Set the milliseconds interval for resources disposal: i.e., un-accessed files will be closed.
+     * @param disposeInterval 
      */
-    public int getMaxReadersPerFile() {
-        return maxReadersPerFile;
+    public void setDisposeInterval(long disposeInterval) {
+        this.disposeInterval = disposeInterval;
     }
 
     /**
-     * Set the max number of concurrent readers per log file.
-     * @param maxReadersPerFile
+     * Get the milliseconds interval for resources disposal.
+     * @return 
      */
-    public void setMaxReadersPerFile(int maxReadersPerFile) {
-        this.maxReadersPerFile = maxReadersPerFile;
+    public long getDisposeInterval() {
+        return disposeInterval;
     }
 
     public String toString() {
         return directory.toString();
     }
 
-    void setLastAppendLocation(Location lastSyncedLocation) {
-        this.lastAppendLocation.set(lastSyncedLocation);
+    ConcurrentNavigableMap<Integer, DataFile> getDataFiles() {
+        return dataFiles;
     }
 
     ConcurrentNavigableMap<Location, WriteCommand> getInflightWrites() {
         return inflightWrites;
-    }
-
-    void addToTotalLength(int size) {
-        totalLength.addAndGet(size);
     }
 
     void sync() throws IOException {
@@ -543,40 +509,45 @@ public class Journal implements Iterable<Location> {
         if (dataFiles.isEmpty()) {
             rotateWriteFile();
         }
-        return dataFiles.get(dataFiles.size() - 1);
+        return dataFiles.lastEntry().getValue();
     }
 
     DataFile rotateWriteFile() {
-        int nextNum = !dataFiles.isEmpty() ? dataFiles.get(dataFiles.size() - 1).getDataFileId().intValue() + 1 : 1;
+        int nextNum = !dataFiles.isEmpty() ? dataFiles.lastEntry().getValue().getDataFileId().intValue() + 1 : 1;
         File file = getFile(nextNum);
         DataFile nextWriteFile = new DataFile(file, nextNum);
-        // actually allocate the disk space
-        fileMap.put(nextWriteFile.getDataFileId(), nextWriteFile);
-        fileByFileMap.put(file, nextWriteFile);
         if (!dataFiles.isEmpty()) {
-            dataFiles.get(dataFiles.size() - 1).setNext(nextWriteFile);
+            dataFiles.lastEntry().getValue().setNext(nextWriteFile);
         }
-        dataFiles.add(nextWriteFile);
+        dataFiles.put(nextWriteFile.getDataFileId(), nextWriteFile);
         return nextWriteFile;
     }
 
-    private Location goToFirstLocation(DataFile file, boolean mustBeValid, boolean goToNextFile) throws IOException, IllegalStateException {
+    void setLastAppendLocation(Location location) {
+        this.lastAppendLocation.set(location);
+    }
+
+    void addToTotalLength(int size) {
+        totalLength.addAndGet(size);
+    }
+
+    private Location goToFirstLocation(DataFile file, byte type, boolean goToNextFile) throws IOException, IllegalStateException {
         Location candidate = new Location();
         candidate.setDataFileId(file.getDataFileId());
         candidate.setOffset(0);
-        if (!updateLocationDetails(candidate, false)) {
+        if (!fillLocationDetails(candidate, false)) {
             return null;
         } else {
-            if (!mustBeValid || (mustBeValid && candidate.isValid())) {
+            if (candidate.getType() == type) {
                 return candidate;
             } else {
-                return goToNextLocation(candidate, mustBeValid, goToNextFile);
+                return goToNextLocation(candidate, type, goToNextFile);
             }
         }
     }
 
-    private Location goToNextLocation(Location start, boolean mustBeValid, boolean goToNextFile) throws IOException {
-        if (start.getSize() == -1 && !updateLocationDetails(start, false)) {
+    private Location goToNextLocation(Location start, byte type, boolean goToNextFile) throws IOException {
+        if (start.getSize() == Location.NOT_SET && !fillLocationDetails(start, false)) {
             return null;
         } else {
             Location current = start;
@@ -584,10 +555,10 @@ public class Journal implements Iterable<Location> {
             while (next == null) {
                 Location candidate = new Location(current);
                 candidate.setOffset(current.getOffset() + current.getSize());
-                if (!updateLocationDetails(candidate, goToNextFile)) {
+                if (!fillLocationDetails(candidate, goToNextFile)) {
                     break;
                 } else {
-                    if (!mustBeValid || (mustBeValid && candidate.isValid())) {
+                    if (candidate.getType() == type) {
                         next = candidate;
                     } else {
                         current = candidate;
@@ -598,9 +569,8 @@ public class Journal implements Iterable<Location> {
         }
     }
 
-    private boolean updateLocationDetails(Location cur, boolean goToNextFile) throws IOException {
+    private boolean fillLocationDetails(Location cur, boolean goToNextFile) throws IOException {
         DataFile dataFile = getDataFile(cur);
-
         // Did it go into the next file and should we go too?
         if (dataFile.getLength() <= cur.getOffset()) {
             if (goToNextFile) {
@@ -615,14 +585,7 @@ public class Journal implements Iterable<Location> {
                 return false;
             }
         }
-
-        // Load in location size and type.
-        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
-        try {
-            return reader.updateLocationDetails(cur);
-        } finally {
-            accessorPool.closeDataFileAccessor(reader);
-        }
+        return accessor.fillLocationDetails(cur);
     }
 
     private File getFile(int nextNum) {
@@ -633,9 +596,9 @@ public class Journal implements Iterable<Location> {
 
     private DataFile getDataFile(Location item) throws IOException {
         Integer key = Integer.valueOf(item.getDataFileId());
-        DataFile dataFile = fileMap.get(key);
+        DataFile dataFile = dataFiles.get(key);
         if (dataFile == null) {
-            error("Looking for key %d but not found in fileMap: %s", key, fileMap);
+            error("Looking for key %d but not found among data files %s", key, dataFiles);
             throw new IOException("Could not locate data file " + getFile(item.getDataFileId()));
         }
         return dataFile;
@@ -645,12 +608,9 @@ public class Journal implements Iterable<Location> {
         return dataFile.getNext();
     }
 
-    private void forceRemoveDataFile(DataFile dataFile) throws IOException {
-        accessorPool.disposeDataFileAccessors(dataFile);
-        fileByFileMap.remove(dataFile.getFile());
-        fileMap.remove(dataFile.getDataFileId());
+    private void removeDataFile(DataFile dataFile) throws IOException {
+        dataFiles.remove(dataFile.getDataFileId());
         totalLength.addAndGet(-dataFile.getLength());
-        dataFiles.remove(dataFile);
         if (archiveFiles) {
             dataFile.move(getDirectoryArchive());
             debug("moved data file %s to %s", dataFile, getDirectoryArchive());
@@ -663,75 +623,250 @@ public class Journal implements Iterable<Location> {
         }
     }
 
-    private Location recoveryCheck(DataFile dataFile) throws IOException {
-        byte controlRecord[] = new byte[BATCH_CONTROL_RECORD_SIZE];
-        DataByteArrayInputStream controlIs = new DataByteArrayInputStream(controlRecord);
-
-        Location location = new Location();
-        location.setDataFileId(dataFile.getDataFileId());
-        location.setOffset(0);
-
-        DataFileAccessor reader = accessorPool.openDataFileAccessor(dataFile);
+    private void compactDataFile(DataFile currentFile, Location firstUserLocation) throws IOException {
+        DataFile tmpFile = new DataFile(
+                new File(currentFile.getFile().getParent(), filePrefix + currentFile.getDataFileId() + ".tmp" + fileSuffix),
+                currentFile.getDataFileId());
+        RandomAccessFile raf = tmpFile.openRandomAccessFile();
         try {
-            while (true) {
-                reader.readFile(location.getOffset(), controlRecord);
-                controlIs.restart();
-
-                // Assert that it's  a batch record.
-                if (controlIs.readInt() != BATCH_CONTROL_RECORD_SIZE) {
-                    break;
-                }
-                if (controlIs.readByte() != BATCH_CONTROL_RECORD_TYPE) {
-                    break;
-                }
-                for (int i = 0; i < BATCH_CONTROL_RECORD_MAGIC.length; i++) {
-                    if (controlIs.readByte() != BATCH_CONTROL_RECORD_MAGIC[i]) {
-                        break;
-                    }
-                }
-
-                int size = controlIs.readInt();
-                if (size > maxWriteBatchSize) {
-                    break;
-                }
-
-                if (isChecksum()) {
-
-                    long expectedChecksum = controlIs.readLong();
-
-                    byte data[] = new byte[size];
-                    reader.readFile(location.getOffset() + BATCH_CONTROL_RECORD_SIZE, data);
-
-                    Checksum checksum = new Adler32();
-                    checksum.update(data, 0, data.length);
-
-                    if (expectedChecksum != checksum.getValue()) {
-                        break;
-                    }
-
-                }
-
-
-                location.setOffset(location.getOffset() + BATCH_CONTROL_RECORD_SIZE + size);
+            Location currentUserLocation = firstUserLocation;
+            WriteBatch batch = new WriteBatch(tmpFile, 0);
+            batch.prepareBatch();
+            while (currentUserLocation != null) {
+                Buffer data = accessor.readLocation(currentUserLocation);
+                WriteCommand write = new WriteCommand(new Location(currentUserLocation), data, true);
+                batch.appendBatch(write);
+                currentUserLocation = goToNextLocation(currentUserLocation, Location.USER_RECORD_TYPE, false);
             }
-
-        } catch (IOException e) {
+            batch.perform(raf, null, true);
         } finally {
-            accessorPool.closeDataFileAccessor(reader);
+            if (raf != null) {
+                raf.close();
+            }
         }
+        if (currentFile.getFile().delete()) {
+            accessor.dispose(currentFile);
+            totalLength.addAndGet(-currentFile.getLength());
+            totalLength.addAndGet(tmpFile.getLength());
+            if (tmpFile.getFile().renameTo(currentFile.getFile())) {
+                currentFile.setLength(tmpFile.getLength());
+            } else {
+                throw new IOException("Cannot rename file: " + tmpFile.getFile());
+            }
+        } else {
+            throw new IOException("Cannot remove file: " + currentFile.getFile());
+        }
+    }
 
-        dataFile.setLength(location.getOffset());
+    private Location recoveryCheck() throws IOException {
+        Location location = goToFirstLocation(dataFiles.firstEntry().getValue(), Location.BATCH_CONTROL_RECORD_TYPE, false);
+        while (true) {
+            ByteBuffer buffer = accessor.readLocation(location).toByteBuffer();
+            for (int i = 0; i < BATCH_CONTROL_RECORD_MAGIC.length; i++) {
+                if (buffer.get() != BATCH_CONTROL_RECORD_MAGIC[i]) {
+                    throw new IOException("Bad control record magic for location: " + location);
+                }
+            }
+            if (isChecksum()) {
+                long expectedChecksum = buffer.getLong();
+                byte data[] = new byte[buffer.remaining()];
+                Checksum checksum = new Adler32();
+                buffer.get(data);
+                checksum.update(data, 0, data.length);
+                if (expectedChecksum != checksum.getValue()) {
+                    throw new IOException("Bad checksum for location: " + location);
+                }
+            }
+            Location next = goToNextLocation(location, Location.BATCH_CONTROL_RECORD_TYPE, true);
+            if (next != null) {
+                location = next;
+            } else {
+                break;
+            }
+        }
         return location;
     }
 
-    private boolean hasValidLocations(DataFile file) throws IOException {
-        Location start = goToFirstLocation(file, false, false);
-        Location next = start;
-        boolean hasValidLocations = false | start.isValid();
-        while (!hasValidLocations && (next = goToNextLocation(next, false, false)) != null) {
-            hasValidLocations |= next.isValid();
+    static class WriteBatch {
+
+        private final DataFile dataFile;
+        private final Queue<WriteCommand> writes = new ConcurrentLinkedQueue<WriteCommand>();
+        private final CountDownLatch latch = new CountDownLatch(1);
+        private final int offset;
+        private volatile int size;
+
+        WriteBatch() {
+            this.dataFile = null;
+            this.offset = -1;
         }
-        return hasValidLocations;
+
+        WriteBatch(DataFile dataFile, int offset) throws IOException {
+            this.dataFile = dataFile;
+            this.offset = offset;
+            this.size = BATCH_CONTROL_RECORD_SIZE;
+        }
+
+        boolean canBatch(WriteCommand write, int maxWriteBatchSize, int maxFileLength) throws IOException {
+            int thisBatchSize = size + write.location.getSize();
+            int thisFileLength = offset + thisBatchSize;
+            if (thisBatchSize > maxWriteBatchSize || thisFileLength > maxFileLength) {
+                return false;
+            } else {
+                return true;
+            }
+        }
+
+        WriteCommand prepareBatch() throws IOException {
+            WriteCommand controlRecord = new WriteCommand(new Location(), null, false);
+            controlRecord.location.setType(Location.BATCH_CONTROL_RECORD_TYPE);
+            controlRecord.location.setSize(Journal.BATCH_CONTROL_RECORD_SIZE);
+            controlRecord.location.setDataFileId(dataFile.getDataFileId());
+            controlRecord.location.setOffset(offset);
+            size = controlRecord.location.getSize();
+            dataFile.incrementLength(size);
+            writes.offer(controlRecord);
+            return controlRecord;
+        }
+
+        void appendBatch(WriteCommand writeRecord) throws IOException {
+            writeRecord.location.setDataFileId(dataFile.getDataFileId());
+            writeRecord.location.setOffset(offset + size);
+            size += writeRecord.location.getSize();
+            dataFile.incrementLength(writeRecord.location.getSize());
+            writes.offer(writeRecord);
+        }
+
+        Location perform(RandomAccessFile file, ReplicationTarget replicator, boolean checksum) throws IOException {
+            DataByteArrayOutputStream buffer = new DataByteArrayOutputStream(size);
+            boolean forceToDisk = false;
+            WriteCommand latest = null;
+
+            // Write an empty batch control record.
+            buffer.reset();
+            buffer.writeInt(BATCH_CONTROL_RECORD_SIZE);
+            buffer.writeByte(Location.BATCH_CONTROL_RECORD_TYPE);
+            buffer.writeInt(0);
+            buffer.write(BATCH_CONTROL_RECORD_MAGIC);
+            buffer.writeLong(0);
+
+            WriteCommand control = writes.peek();
+            Iterator<WriteCommand> commands = writes.iterator();
+            // Skip the control write:
+            commands.next();
+            // Process others:
+            while (commands.hasNext()) {
+                WriteCommand current = commands.next();
+                forceToDisk |= current.sync;
+                buffer.writeInt(current.location.getSize());
+                buffer.writeByte(current.location.getType());
+                buffer.write(current.data.getData(), current.data.getOffset(), current.data.getLength());
+                latest = current;
+            }
+
+            // Now we can fill in the batch control record properly.
+            Buffer sequence = buffer.toBuffer();
+            buffer.reset();
+            buffer.skip(Journal.HEADER_SIZE);
+            buffer.writeInt(sequence.getLength() - Journal.HEADER_SIZE - Journal.BATCH_SIZE);
+            buffer.skip(Journal.BATCH_CONTROL_RECORD_MAGIC.length);
+            if (checksum) {
+                Checksum adler32 = new Adler32();
+                adler32.update(sequence.getData(), sequence.getOffset() + Journal.BATCH_CONTROL_RECORD_SIZE, sequence.getLength() - Journal.BATCH_CONTROL_RECORD_SIZE);
+                buffer.writeLong(adler32.getValue());
+            }
+
+            // Now do the 1 big write.
+            file.seek(offset);
+            file.write(sequence.getData(), sequence.getOffset(), sequence.getLength());
+
+            if (forceToDisk) {
+                IOHelper.sync(file.getFD());
+            }
+
+            if (replicator != null) {
+                replicator.replicate(control.location, sequence, forceToDisk);
+            }
+
+            return latest.location;
+        }
+
+        DataFile getDataFile() {
+            return dataFile;
+        }
+
+        int getSize() {
+            return size;
+        }
+
+        CountDownLatch getLatch() {
+            return latch;
+        }
+
+        Collection<WriteCommand> getWrites() {
+            return Collections.unmodifiableCollection(writes);
+        }
+
+        boolean isEmpty() {
+            return writes.isEmpty();
+        }
+
     }
 
+    static class WriteCommand implements JournalListener.Write {
+
+        private final Location location;
+        private final boolean sync;
+        private volatile Buffer data;
+
+        WriteCommand(Location location, Buffer data, boolean sync) {
+            this.location = location;
+            this.data = data;
+            this.sync = sync;
+        }
+
+        public Location getLocation() {
+            return location;
+        }
+
+        Buffer getData() {
+            return data;
+        }
+
+        boolean isSync() {
+            return sync;
+        }
+
+    }
+
+    static class WriteFuture implements Future<Boolean> {
+
+        private final CountDownLatch latch;
+
+        WriteFuture(CountDownLatch latch) {
+            this.latch = latch;
+        }
+
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            throw new UnsupportedOperationException("Cannot cancel this type of future!");
+        }
+
+        public boolean isCancelled() {
+            throw new UnsupportedOperationException("Cannot cancel this type of future!");
+        }
+
+        public boolean isDone() {
+            return latch.getCount() == 0;
+        }
+
+        public Boolean get() throws InterruptedException, ExecutionException {
+            latch.await();
+            return true;
+        }
+
+        public Boolean get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
+            boolean success = latch.await(timeout, unit);
+            return success;
+        }
+
+    }
 }

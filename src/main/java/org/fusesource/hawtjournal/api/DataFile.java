@@ -19,6 +19,7 @@ package org.fusesource.hawtjournal.api;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.fusesource.hawtjournal.util.IOHelper;
 
 /**
@@ -28,13 +29,13 @@ class DataFile implements Comparable<DataFile> {
 
     private final File file;
     private final Integer dataFileId;
+    private final AtomicInteger length;
     private volatile DataFile next;
-    private volatile int length;
 
     DataFile(File file, int number) {
         this.file = file;
         this.dataFileId = Integer.valueOf(number);
-        length = (int) (file.exists() ? file.length() : 0);
+        this.length = new AtomicInteger((int) (file.exists() ? file.length() : 0));
     }
 
     File getFile() {
@@ -45,46 +46,39 @@ class DataFile implements Comparable<DataFile> {
         return dataFileId;
     }
 
-    synchronized DataFile getNext() {
+    DataFile getNext() {
         return next;
     }
 
-    synchronized void setNext(DataFile next) {
+    void setNext(DataFile next) {
         this.next = next;
     }
 
-    synchronized int getLength() {
-        return length;
+    int getLength() {
+        return this.length.get();
     }
 
-    synchronized void setLength(int length) {
-        this.length = length;
+    void setLength(int length) {
+        this.length.set(length);
     }
 
-    synchronized void incrementLength(int size) {
-        length += size;
+    void incrementLength(int size) {
+        this.length.addAndGet(size);
     }
 
-    public String toString() {
-        return file.getName() + " number = " + dataFileId + " , length = " + length;
-    }
-
-    synchronized RandomAccessFile openRandomAccessFile() throws IOException {
+    RandomAccessFile openRandomAccessFile() throws IOException {
         return new RandomAccessFile(file, "rw");
     }
 
-    synchronized void closeRandomAccessFile(RandomAccessFile file) throws IOException {
-        file.close();
-    }
-
-    synchronized boolean delete() throws IOException {
+    boolean delete() throws IOException {
         return file.delete();
     }
 
-    synchronized void move(File targetDirectory) throws IOException {
+    void move(File targetDirectory) throws IOException {
         IOHelper.moveFile(file, targetDirectory);
     }
 
+    @Override
     public int compareTo(DataFile df) {
         return dataFileId - df.dataFileId;
     }
@@ -103,4 +97,8 @@ class DataFile implements Comparable<DataFile> {
         return dataFileId;
     }
 
+    @Override
+    public String toString() {
+        return file.getName() + " number = " + dataFileId + " , length = " + length;
+    }
 }
