@@ -27,7 +27,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicReference;
 import org.fusesource.hawtbuf.Buffer;
 import static org.fusesource.hawtjournal.util.LogHelper.*;
@@ -42,20 +42,16 @@ class DataFileAppender {
 
     private final WriteBatch NULL_BATCH = new WriteBatch();
     //
-    private final int SPIN_RETRIES = 100;
-    private final int SPIN_BACKOFF = 10;
-    //
     private final BlockingQueue<WriteBatch> batchQueue = new LinkedBlockingQueue<WriteBatch>();
     private final AtomicReference<Exception> firstAsyncException = new AtomicReference<Exception>();
     private final CountDownLatch shutdownDone = new CountDownLatch(1);
-    private final AtomicBoolean batching = new AtomicBoolean(false);
+    private final Semaphore mutex = new Semaphore(1);
     //
     private final Journal journal;
     //
     private volatile WriteBatch nextWriteBatch;
     private volatile DataFile lastAppendDataFile;
     private volatile RandomAccessFile lastAppendRaf;
-    private volatile Thread writer;
     private volatile boolean running;
     private volatile boolean shutdown;
 
@@ -86,106 +82,77 @@ class DataFileAppender {
     }
 
     Future<Boolean> sync() throws IOException {
-        int spinnings = 0;
-        int limit = SPIN_RETRIES;
-        while (true) {
-            try {
-                if (batching.compareAndSet(false, true)) {
-                    try {
-                        Future result = null;
-                        if (nextWriteBatch != null) {
-                            result = new WriteFuture(nextWriteBatch.getLatch());
-                            batchQueue.put(nextWriteBatch);
-                            nextWriteBatch = null;
-                        } else {
-                            result = new WriteFuture(new CountDownLatch(0));
-                        }
-                        return result;
-                    } finally {
-                        batching.set(false);
-                    }
-                } else {
-                    // Spin waiting for new batch ...
-                    if (spinnings <= limit) {
-                        spinnings++;
-                        continue;
-                    } else {
-                        Thread.sleep(SPIN_BACKOFF);
-                        continue;
-                    }
-                }
-            } catch (InterruptedException ex) {
-                throw new IllegalStateException(ex.getMessage(), ex);
+        try {
+            mutex.acquire();
+
+            Future<Boolean> result;
+            if (nextWriteBatch != null) {
+                result = new WriteFuture(nextWriteBatch.getLatch());
+                batchQueue.put(nextWriteBatch);
+                nextWriteBatch = null;
+            } else {
+                result = new WriteFuture(new CountDownLatch(0));
             }
+            return result;
+        } catch (InterruptedException ex) {
+            throw new IllegalStateException(ex.getMessage(), ex);
+        } finally {
+            mutex.release();
         }
     }
 
     private WriteBatch enqueue(WriteCommand writeRecord) throws IOException {
-        WriteBatch currentBatch = null;
-        int spinnings = 0;
-        int limit = SPIN_RETRIES;
+        WriteBatch currentBatch;
         while (true) {
-            if (shutdown) {
-                throw new IOException("DataFileAppender Writer Thread Shutdown!");
-            }
-            if (firstAsyncException.get() != null) {
-                throw new IOException(firstAsyncException.get());
-            }
             try {
-                if (batching.compareAndSet(false, true) && !shutdown) {
-                    try {
-                        if (nextWriteBatch == null) {
-                            DataFile file = journal.getCurrentWriteFile();
-                            boolean canBatch = false;
-                            currentBatch = new WriteBatch(file, file.getLength());
-                            canBatch = currentBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
-                            if (!canBatch) {
-                                file = journal.rotateWriteFile();
-                                currentBatch = new WriteBatch(file, file.getLength());
-                            }
-                            WriteCommand controlRecord = currentBatch.prepareBatch();
-                            currentBatch.appendBatch(writeRecord);
-                            if (!writeRecord.isSync()) {
-                                journal.getInflightWrites().put(controlRecord.getLocation(), controlRecord);
-                                journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
-                                nextWriteBatch = currentBatch;
-                            } else {
-                                batchQueue.put(currentBatch);
-                            }
-                            break;
-                        } else {
-                            boolean canBatch = nextWriteBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
-                            if (canBatch && !writeRecord.isSync()) {
-                                nextWriteBatch.appendBatch(writeRecord);
-                                journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
-                                currentBatch = nextWriteBatch;
-                                break;
-                            } else if (canBatch && writeRecord.isSync()) {
-                                nextWriteBatch.appendBatch(writeRecord);
-                                batchQueue.put(nextWriteBatch);
-                                currentBatch = nextWriteBatch;
-                                nextWriteBatch = null;
-                                break;
-                            } else {
-                                batchQueue.put(nextWriteBatch);
-                                nextWriteBatch = null;
-                            }
-                        }
-                    } finally {
-                        batching.set(false);
+                mutex.acquire();
+                if (shutdown) {
+                    throw new IOException("DataFileAppender Writer Thread Shutdown!");
+                }
+                if (firstAsyncException.get() != null) {
+                    throw new IOException(firstAsyncException.get());
+                }
+
+                if (nextWriteBatch == null) {
+                    DataFile file = journal.getCurrentWriteFile();
+                    currentBatch = new WriteBatch(file, file.getLength());
+                    boolean canBatch = currentBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
+                    if (!canBatch) {
+                        file = journal.rotateWriteFile();
+                        currentBatch = new WriteBatch(file, file.getLength());
                     }
-                } else {
-                    // Spin waiting for new batch ...
-                    if (spinnings <= limit) {
-                        spinnings++;
-                        continue;
+                    WriteCommand controlRecord = currentBatch.prepareBatch();
+                    currentBatch.appendBatch(writeRecord);
+                    if (!writeRecord.isSync()) {
+                        journal.getInflightWrites().put(controlRecord.getLocation(), controlRecord);
+                        journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
+                        nextWriteBatch = currentBatch;
                     } else {
-                        Thread.sleep(SPIN_BACKOFF);
-                        continue;
+                        batchQueue.put(currentBatch);
+                    }
+                    break;
+                } else {
+                    boolean canBatch = nextWriteBatch.canBatch(writeRecord, journal.getMaxWriteBatchSize(), journal.getMaxFileLength());
+                    if (canBatch && !writeRecord.isSync()) {
+                        nextWriteBatch.appendBatch(writeRecord);
+                        journal.getInflightWrites().put(writeRecord.getLocation(), writeRecord);
+                        currentBatch = nextWriteBatch;
+                        break;
+                    } else if (canBatch) {
+                        nextWriteBatch.appendBatch(writeRecord);
+                        batchQueue.put(nextWriteBatch);
+                        currentBatch = nextWriteBatch;
+                        nextWriteBatch = null;
+                        break;
+                    } else {
+                        batchQueue.put(nextWriteBatch);
+                        nextWriteBatch = null;
                     }
                 }
             } catch (InterruptedException ex) {
                 throw new IllegalStateException(ex.getMessage(), ex);
+            } finally {
+                mutex.release();
             }
         }
         return currentBatch;
@@ -194,7 +161,7 @@ class DataFileAppender {
     void open() {
         if (!running) {
             running = true;
-            writer = new Thread() {
+            final Thread writer = new Thread() {
 
                 public void run() {
                     try {
@@ -222,9 +189,8 @@ class DataFileAppender {
             if (!shutdown) {
                 if (running) {
                     shutdown = true;
-                    while (batching.get() == true) {
-                        Thread.sleep(SPIN_BACKOFF);
-                    }
+                    mutex.acquire();
+
                     if (nextWriteBatch != null) {
                         batchQueue.put(nextWriteBatch);
                         nextWriteBatch = null;
@@ -239,6 +205,8 @@ class DataFileAppender {
             shutdownDone.await();
         } catch (InterruptedException e) {
             throw new InterruptedIOException();
+        } finally {
+            mutex.release();
         }
     }
 
