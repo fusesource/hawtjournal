@@ -546,7 +546,7 @@ public class Journal implements Iterable<Location> {
         }
     }
 
-    private Location goToNextLocation(Location start, byte type, boolean goToNextFile) throws IOException {
+    public Location goToNextLocation(Location start, byte type, boolean goToNextFile) throws IOException {
         if (start.getSize() == Location.NOT_SET && !fillLocationDetails(start, false)) {
             return null;
         } else {

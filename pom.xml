@@ -43,6 +43,8 @@
     <commons-logging-version>1.1</commons-logging-version>
     <junit-version>4.7</junit-version>
     <log4j-version>1.2.14</log4j-version>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
   </properties>
 
   <url>http://${forge-project-id}.fusesource.org/</url>
