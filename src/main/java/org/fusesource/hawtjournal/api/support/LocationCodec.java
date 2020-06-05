@@ -32,7 +32,7 @@ public class LocationCodec implements Codec<Location> {
 
     public void encode(Location object, DataOutput dataOut) throws IOException {
         VarIntegerCodec.INSTANCE.encode(object.getDataFileId(), dataOut);
-        VarIntegerCodec.INSTANCE.encode(object.getOffset(), dataOut);
+        VarIntegerCodec.INSTANCE.encode(object.getPointer(), dataOut);
     }
 
     public Location decode(DataInput dataIn) throws IOException {
@@ -59,6 +59,6 @@ public class LocationCodec implements Codec<Location> {
 
     public int estimatedSize(Location object) {
         return VarIntegerCodec.INSTANCE.estimatedSize(object.getDataFileId()) +
-               VarIntegerCodec.INSTANCE.estimatedSize(object.getOffset());
+               VarIntegerCodec.INSTANCE.estimatedSize(object.getPointer());
     }
 }

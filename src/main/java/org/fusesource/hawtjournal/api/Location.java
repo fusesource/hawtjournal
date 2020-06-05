@@ -37,9 +37,10 @@ public final class Location implements Comparable<Location> {
     static final int NOT_SET = -1;
     //
     private volatile int dataFileId = NOT_SET;
-    private volatile int offset = NOT_SET;
+    private volatile int pointer = NOT_SET;
     private volatile int size = NOT_SET;
     private volatile byte type = NO_RECORD_TYPE;
+    private volatile byte[] data;
     private CountDownLatch latch;
 
     public Location() {
@@ -47,20 +48,24 @@ public final class Location implements Comparable<Location> {
 
     public Location(Location item) {
         this.dataFileId = item.dataFileId;
-        this.offset = item.offset;
+        this.pointer = item.pointer;
         this.size = item.size;
         this.type = item.type;
     }
 
-    public Location(int dataFileId, int offset) {
-        this.dataFileId=dataFileId;
-        this.offset=offset;
+    public Location(int dataFileId) {
+        this.dataFileId = dataFileId;
     }
-    
+
+    public Location(int dataFileId, int pointer) {
+        this.dataFileId = dataFileId;
+        this.pointer = pointer;
+    }
+
     public boolean isBatchControlRecord() {
         return dataFileId != NOT_SET && type == Location.BATCH_CONTROL_RECORD_TYPE;
     }
-    
+
     public boolean isDeletedRecord() {
         return dataFileId != NOT_SET && type == Location.DELETED_RECORD_TYPE;
     }
@@ -72,21 +77,25 @@ public final class Location implements Comparable<Location> {
     public int getSize() {
         return size;
     }
-    
-    public int getOffset() {
-        return offset;
+
+    public int getPointer() {
+        return pointer;
     }
-    
+
     public int getDataFileId() {
         return dataFileId;
+    }
+
+    public byte[] getData() {
+        return data;
     }
 
     void setSize(int size) {
         this.size = size;
     }
-    
-    void setOffset(int offset) {
-        this.offset = offset;
+
+    void setPointer(int pointer) {
+        this.pointer = pointer;
     }
 
     void setDataFileId(int file) {
@@ -109,20 +118,24 @@ public final class Location implements Comparable<Location> {
         this.latch = latch;
     }
 
+    void setData(byte[] data) {
+        this.data = data;
+    }
+
     public String toString() {
-        return dataFileId+":"+offset;
+        return dataFileId + ":" + pointer;
     }
 
     public void writeExternal(DataOutput dos) throws IOException {
         dos.writeInt(dataFileId);
-        dos.writeInt(offset);
+        dos.writeInt(pointer);
         dos.writeInt(size);
         dos.writeByte(type);
     }
 
     public void readExternal(DataInput dis) throws IOException {
         dataFileId = dis.readInt();
-        offset = dis.readInt();
+        pointer = dis.readInt();
         size = dis.readInt();
         type = dis.readByte();
     }
@@ -130,7 +143,7 @@ public final class Location implements Comparable<Location> {
     public int compareTo(Location o) {
         Location l = o;
         if (dataFileId == l.dataFileId) {
-            int rc = offset - l.offset;
+            int rc = pointer - l.pointer;
             return rc;
         }
         return dataFileId - l.dataFileId;
@@ -139,13 +152,13 @@ public final class Location implements Comparable<Location> {
     public boolean equals(Object o) {
         boolean result = false;
         if (o instanceof Location) {
-            result = compareTo((Location)o) == 0;
+            result = compareTo((Location) o) == 0;
         }
         return result;
     }
 
     public int hashCode() {
-        return dataFileId ^ offset;
+        return dataFileId ^ pointer;
     }
 
 }

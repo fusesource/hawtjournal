@@ -18,7 +18,6 @@ package org.fusesource.hawtjournal.api;
 
 import org.junit.Before;
 import java.io.File;
-import java.nio.ByteBuffer;
 import org.junit.Test;
 import static org.junit.Assert.*;
 
@@ -46,14 +45,14 @@ public class ApiTest {
         int iterations = 1000;
         for (int i = 0; i < iterations; i++) {
             boolean sync = i % 2 == 0 ? true : false;
-            journal.write(ByteBuffer.wrap(new String("DATA" + i).getBytes("UTF-8")), sync);
+            journal.write(new String("DATA" + i).getBytes("UTF-8"), sync);
         }
 
         // Replay and read the journal:
         int i = 0;
         for (Location location : journal) {
-            ByteBuffer record = journal.read(location);
-            assertEquals("DATA" + i++, new String(record.array(), "UTF-8"));
+            byte[] record = journal.read(location);
+            assertEquals("DATA" + i++, new String(record, "UTF-8"));
         }
 
         // Close the journal:
@@ -66,4 +65,5 @@ public class ApiTest {
         JOURNAL_DIR.delete();
         JOURNAL_DIR.mkdir();
     }
+
 }
